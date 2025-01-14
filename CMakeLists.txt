@@ -36,6 +36,8 @@ if (UNIX AND NOT APPLE)
 endif()
 add_subdirectory(third_party/backward-cpp)
 
+target_include_directories(backward_interface INTERFACE /usr/include/libdwarf/)
+
 set(vcd2fst_SRC
   ${PROJECT_SOURCE_DIR}/vcd2fst.c
   ${PROJECT_SOURCE_DIR}/fstapi.c
