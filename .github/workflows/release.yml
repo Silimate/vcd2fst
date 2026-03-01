@@ -1,4 +1,4 @@
-name: Release (anylinux amd64)
+name: "Release (anylinux amd64 + macOS arm64)"
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-linux:
     runs-on: ubuntu-latest
     name: Build anylinux amd64 tarball
 
@@ -70,13 +70,14 @@ jobs:
           printf '%s\n' \
             "Automated build from \`main\` @ [\`${SHORT_SHA}\`](${REPO_URL}/commit/${FULL_SHA})" \
             "" \
-            "**Platform:** Linux amd64 (Alpine-based, portable across Linux distros)" \
             "**Built:** ${DATE}" \
             "" \
-            "### Installation" \
-            "\`\`\`bash" \
-            "sudo tar xzf vcd2fst-anylinux-amd64.tar.gz -C /" \
-            "\`\`\`" \
+            "### Platforms" \
+            "" \
+            "| Platform | File | Installation |" \
+            "|----------|------|--------------|" \
+            "| Linux amd64 (portable) | \`vcd2fst-anylinux-amd64.tar.gz\` | \`sudo tar xzf vcd2fst-anylinux-amd64.tar.gz -C /\` |" \
+            "| macOS arm64 | \`vcd2fst-macos-arm64.tar.gz\` | \`sudo tar xzf vcd2fst-macos-arm64.tar.gz -C /\` |" \
             > release_notes.md
 
       - name: Create permanent release
@@ -101,5 +102,76 @@ jobs:
             --title "Latest Build (${{ steps.meta.outputs.date }})" \
             --notes-file release_notes.md \
             --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    runs-on: macos-15
+    name: Build macOS arm64 tarball
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Install dependencies
+        run: brew install cmake
+
+      - name: Build
+        run: |
+          cmake -DCMAKE_BUILD_TYPE=Release -S . -B build
+          cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Package tarball
+        run: |
+          mkdir -p /tmp/install/usr/local/bin /tmp/install/usr/local/lib
+          cp build/vcd2fst /tmp/install/usr/local/bin/
+
+          # Bundle non-system dylibs and rewrite load paths
+          STAGE=/tmp/install/usr/local
+          for f in "$STAGE"/bin/*; do
+            [ -f "$f" ] || continue
+            otool -L "$f" | awk 'NR>1 {print $1}' | while read -r lib; do
+              case "$lib" in /usr/lib/*|/System/*|@*) continue ;; esac
+              base=$(basename "$lib")
+              [ -f "$STAGE/lib/$base" ] || cp "$lib" "$STAGE/lib/$base"
+              install_name_tool -change "$lib" "@executable_path/../lib/$base" "$f"
+            done
+          done
+          for f in "$STAGE"/lib/*.dylib; do
+            [ -f "$f" ] || continue
+            install_name_tool -id "@loader_path/$(basename "$f")" "$f"
+            otool -L "$f" | awk 'NR>1 {print $1}' | while read -r dep; do
+              case "$dep" in /usr/lib/*|/System/*|@*) continue ;; esac
+              base=$(basename "$dep")
+              [ -f "$STAGE/lib/$base" ] || cp "$dep" "$STAGE/lib/$base"
+              install_name_tool -change "$dep" "@loader_path/$base" "$f"
+            done
+          done
+
+          cd /tmp/install
+          tar czf "$GITHUB_WORKSPACE/vcd2fst-macos-arm64.tar.gz" .
+
+      - name: Upload to permanent release
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y-%m-%d)
+          TAG="build-${DATE}-${SHORT_SHA}"
+          until gh release view "$TAG" > /dev/null 2>&1; do
+            echo "Waiting for release $TAG to be created..."
+            sleep 10
+          done
+          gh release upload "$TAG" vcd2fst-macos-arm64.tar.gz --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to latest release
+        run: |
+          until gh release view latest > /dev/null 2>&1; do
+            echo "Waiting for latest release to be created..."
+            sleep 10
+          done
+          gh release upload latest vcd2fst-macos-arm64.tar.gz --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
