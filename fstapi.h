@@ -425,6 +425,7 @@ int64_t         fstReaderGetTimezero(void *ctx);
 uint64_t        fstReaderGetValueChangeSectionCount(void *ctx);
 char *          fstReaderGetValueFromHandleAtTime(void *ctx, uint64_t tim, fstHandle facidx, char *buf);
 char *          fstReaderGetValueAndTimeFromHandleAtTime(void *ctx, uint64_t tim, fstHandle facidx, char *buf, uint64_t *transition_time);
+char *          fstReaderGetValueWithIntervalFromHandleAtTime(void *ctx, uint64_t tim, fstHandle facidx, char *buf, uint64_t *start_time, uint64_t *end_time);
 uint64_t        fstReaderGetVarCount(void *ctx);
 const char *    fstReaderGetVersionString(void *ctx);
 struct fstHier *fstReaderIterateHier(void *ctx);

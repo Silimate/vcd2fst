@@ -3407,6 +3407,7 @@ uint64_t rvat_chain_pos_time;
 unsigned rvat_chain_pos_valid : 1;
 
 uint64_t rvat_last_transition_time;
+uint64_t rvat_next_transition_time;
 
 /* entries specific to hierarchy traversal */
 
@@ -6540,6 +6541,7 @@ facidx--; /* scale down for array which starts at zero */
 if(((tim == xc->rvat_beg_tim)&&(!xc->rvat_chain_table[facidx])) || (!xc->rvat_chain_table[facidx]))
         {
         xc->rvat_last_transition_time = xc->rvat_beg_tim;
+        xc->rvat_next_transition_time = 0;
         return(fstExtractRvatDataFromFrame(xc, facidx, buf));
         }
 
@@ -6647,6 +6649,7 @@ if(xc->signal_lens[facidx] == 1)
                         break;
                         }
                 }
+        xc->rvat_next_transition_time = (i < xc->rvat_chain_len) ? xc->rvat_time_table[tidx + tdelta] : 0;
         if(iprev != xc->rvat_chain_len)
                 {
                 xc->rvat_last_transition_time = xc->rvat_time_table[tidx];
@@ -6704,6 +6707,7 @@ if(xc->signal_lens[facidx] == 1)
                         }
                 }
 
+        xc->rvat_next_transition_time = (i < xc->rvat_chain_len) ? xc->rvat_time_table[tidx + tdelta] : 0;
         if(iprev != xc->rvat_chain_len)
                 {
                 unsigned char *vdata = xc->rvat_chain_mem + iprev + pskip;
@@ -6805,6 +6809,19 @@ char *result = fstReaderGetValueFromHandleAtTime(ctx, tim, facidx, buf);
 if(result && transition_time && xc)
         {
         *transition_time = xc->rvat_last_transition_time;
+        }
+return(result);
+}
+
+
+char *fstReaderGetValueWithIntervalFromHandleAtTime(void *ctx, uint64_t tim, fstHandle facidx, char *buf, uint64_t *start_time, uint64_t *end_time)
+{
+struct fstReaderContext *xc = (struct fstReaderContext *)ctx;
+char *result = fstReaderGetValueFromHandleAtTime(ctx, tim, facidx, buf);
+if(result && xc)
+        {
+        if(start_time) *start_time = xc->rvat_last_transition_time;
+        if(end_time) *end_time = xc->rvat_next_transition_time;
         }
 return(result);
 }
