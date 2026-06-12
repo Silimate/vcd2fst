@@ -28,7 +28,7 @@ set(CMAKE_CXX_FLAGS_RELEASE
 "${CMAKE_CXX_FLAGS_RELEASE} -Wall -O3 -g -fpermissive"
 )
 
-set_source_files_properties(vcd2fst.c fstapi.c fastlz.c lz4.c jrb.c PROPERTIES LANGUAGE CXX)
+set_source_files_properties(vcd2fst.cpp fstapi.c fastlz.c lz4.c jrb.c PROPERTIES LANGUAGE CXX)
 
 if (UNIX AND NOT APPLE)
   set (STACK_DETAILS_AUTO_DETECT FALSE CACHE BOOL "Auto detect backward's stack details dependencies")
@@ -39,7 +39,7 @@ add_subdirectory(third_party/backward-cpp)
 target_include_directories(backward_interface INTERFACE /usr/include/libdwarf/)
 
 set(vcd2fst_SRC
-  ${PROJECT_SOURCE_DIR}/vcd2fst.c
+  ${PROJECT_SOURCE_DIR}/vcd2fst.cpp
   ${PROJECT_SOURCE_DIR}/fstapi.c
   ${PROJECT_SOURCE_DIR}/fastlz.c
   ${PROJECT_SOURCE_DIR}/lz4.c
