@@ -132,6 +132,7 @@ void **JenkinsIns(void *base_i, const unsigned char *mem, uint32_t length, uint3
 #define FST_GZIO_LEN                    (32768)
 #define FST_HDR_FOURPACK_DUO_SIZE       (4*1024*1024)
 #define FST_ZWRAPPER_HDR_SIZE           (1+8+8)
+#define FST_BLOCK_TIME_TRAILER_SIZE     24
 
 #if defined(__APPLE__) && defined(__MACH__)
 #define FST_MACOSX
@@ -5123,7 +5124,7 @@ for(;;)
 
         /* Seek to the end of the block minus the 24-byte trailer (3 * 8-byte uint64_t fields: 
            tsec_uclen, tsec_clen, tsec_nitems) */
-        if(fstReaderFseeko(xc, xc->f, blkpos + seclen - 24, SEEK_SET) != 0) break;
+        if(fstReaderFseeko(xc, xc->f, blkpos + seclen - FST_BLOCK_TIME_TRAILER_SIZE, SEEK_SET) != 0) break;
         tsec_uclen = fstReaderUint64(xc->f);
         tsec_clen = fstReaderUint64(xc->f);
         tsec_nitems = fstReaderUint64(xc->f);
@@ -5148,7 +5149,7 @@ for(;;)
 
         /* Seek backward from the current position (the end of the block) past the 24-byte 
            trailer and the compressed TIME section payload */
-        if(fstReaderFseeko(xc, xc->f, -24 - ((fst_off_t)tsec_clen), SEEK_CUR) != 0)
+        if(fstReaderFseeko(xc, xc->f, -FST_BLOCK_TIME_TRAILER_SIZE - ((fst_off_t)tsec_clen), SEEK_CUR) != 0)
                 {
                 free(ucdata);
                 break;
