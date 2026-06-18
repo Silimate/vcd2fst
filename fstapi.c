@@ -128,6 +128,7 @@ void **JenkinsIns(void *base_i, const unsigned char *mem, uint32_t length, uint3
 #define FST_HDR_DATE_SIZE               (119)
 #define FST_HDR_FILETYPE_SIZE           (1)
 #define FST_HDR_TIMEZERO_SIZE           (8)
+#define FST_VARINT_CONTINUATION_MASK    0x80
 #define FST_GZIO_LEN                    (32768)
 #define FST_HDR_FOURPACK_DUO_SIZE       (4*1024*1024)
 #define FST_ZWRAPPER_HDR_SIZE           (1+8+8)
@@ -5217,7 +5218,7 @@ for(;;)
                            fstGetVarint64 from reading off the end of ucdata if the file lies about 
                            tsec_nitems or has corrupted varint records. */
                         p = tpnt;
-                        while(p < ucdata_end && (*p & 0x80))
+                        while(p < ucdata_end && (*p & FST_VARINT_CONTINUATION_MASK))
                                 {
                                 p++;
                                 }
