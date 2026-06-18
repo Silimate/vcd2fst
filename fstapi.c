@@ -5103,6 +5103,11 @@ for(;;)
         {
         unsigned char *ucdata;
         unsigned char *cdata;
+        /* destlen and sourcelen are unsigned long (which is 32-bit on LLP64/Windows) to match
+           zlib's uLongf parameters and the file-wide uncompress() conventions. Because conformant 
+           FST writers enforce a hard block-size limit via FST_BREAK_SIZE_MAX (capped at 2 GB), 
+           tsec_uclen and tsec_clen are mathematically guaranteed to never exceed 32-bit limits 
+           on any well-formed FST file. */
         unsigned long destlen;
         unsigned long sourcelen;
         int rc;
