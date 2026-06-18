@@ -5107,6 +5107,10 @@ for(;;)
         uint64_t tpval;
         uint64_t *time_table;
         uint64_t ti;
+        unsigned char *ucdata_end;
+        unsigned char *p;
+        int skiplen;
+        uint64_t val;
 
         if(fstReaderFseeko(xc, xc->f, blkpos + seclen - 24, SEEK_SET) != 0) break;
         tsec_uclen = fstReaderUint64(xc->f);
@@ -5118,7 +5122,11 @@ for(;;)
         destlen = tsec_uclen;
         sourcelen = tsec_clen;
 
-        fstReaderFseeko(xc, xc->f, -24 - ((fst_off_t)tsec_clen), SEEK_CUR);
+        if(fstReaderFseeko(xc, xc->f, -24 - ((fst_off_t)tsec_clen), SEEK_CUR) != 0)
+                {
+                free(ucdata);
+                break;
+                }
         if(tsec_uclen != tsec_clen)
                 {
                 cdata = (unsigned char *)malloc(tsec_clen);
@@ -5128,8 +5136,10 @@ for(;;)
                 rc = uncompress(ucdata, &destlen, cdata, sourcelen);
                 if(rc != Z_OK)
                         {
-                        fprintf(stderr, FST_APIMESS "fstReaderForEachBlockTimeTable(), tsec uncompress rc = %d, exiting.\n", rc);
-                        exit(255);
+                        fprintf(stderr, FST_APIMESS "fstReaderForEachBlockTimeTable(), tsec uncompress rc = %d, failure.\n", rc);
+                        free(cdata);
+                        free(ucdata);
+                        break;
                         }
 
                 free(cdata);
@@ -5162,11 +5172,14 @@ for(;;)
                 }
         tpnt = ucdata;
         tpval = 0;
-        unsigned char *ucdata_end = ucdata + tsec_uclen;
+        ucdata_end = ucdata + tsec_uclen;
         for(ti=0;ti<tsec_nitems;ti++)
                 {
-                int skiplen;
-                unsigned char *p = tpnt;
+                /* Pre-scan the variable-length integer (varint) at tpnt to find its termination 
+                   (byte with the MSB unset) before calling fstGetVarint64. This prevents 
+                   fstGetVarint64 from reading off the end of ucdata if the file lies about 
+                   tsec_nitems or has corrupted varint records. */
+                p = tpnt;
                 while(p < ucdata_end && (*p & 0x80))
                         {
                         p++;
@@ -5176,7 +5189,7 @@ for(;;)
                         tsec_nitems = ti;
                         break;
                         }
-                uint64_t val = fstGetVarint64(tpnt, &skiplen);
+                val = fstGetVarint64(tpnt, &skiplen);
                 tpval = time_table[ti] = tpval + val;
                 tpnt += skiplen;
                 }
