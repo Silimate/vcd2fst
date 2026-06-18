@@ -5108,11 +5108,11 @@ for(;;)
         uint64_t *time_table;
         uint64_t ti;
 
-        fstReaderFseeko(xc, xc->f, blkpos + seclen - 24, SEEK_SET);
+        if(fstReaderFseeko(xc, xc->f, blkpos + seclen - 24, SEEK_SET) != 0) break;
         tsec_uclen = fstReaderUint64(xc->f);
         tsec_clen = fstReaderUint64(xc->f);
         tsec_nitems = fstReaderUint64(xc->f);
-
+        if(tsec_clen > seclen) break; /* corrupted tsec_clen: by definition it can't be larger than size of section */
         ucdata = (unsigned char *)malloc(tsec_uclen);
         if(!ucdata) { break; } /* malloc fail from corrupted tsec_uclen */
         destlen = tsec_uclen;
@@ -5122,6 +5122,7 @@ for(;;)
         if(tsec_uclen != tsec_clen)
                 {
                 cdata = (unsigned char *)malloc(tsec_clen);
+                if(!cdata) { free(ucdata); break; }
                 fstFread(cdata, tsec_clen, 1, xc->f);
 
                 rc = uncompress(ucdata, &destlen, cdata, sourcelen);
@@ -5138,7 +5139,22 @@ for(;;)
                 fstFread(ucdata, tsec_uclen, 1, xc->f);
                 }
 
-        time_table = (uint64_t *)calloc(tsec_nitems ? tsec_nitems : 1, sizeof(uint64_t));
+	if(sizeof(size_t) < sizeof(uint64_t))
+		{
+		/* TALOS-2023-1792 for 32b overflow */
+		uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
+		size_t   chk_32 = ((size_t)tsec_nitems) * sizeof(uint64_t);
+		if(chk_64 != chk_32) chk_report_abort("TALOS-2023-1792");
+		}
+	else
+		{
+		uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
+		if((chk_64/sizeof(uint64_t)) != tsec_nitems)
+			{
+			chk_report_abort("TALOS-2023-1792");
+			}
+		}
+        time_table = (uint64_t *)calloc(tsec_nitems, sizeof(uint64_t));
         tpnt = ucdata;
         tpval = 0;
         for(ti=0;ti<tsec_nitems;ti++)
