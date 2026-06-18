@@ -5029,6 +5029,137 @@ return(fstReaderIterBlocks2(ctx, value_change_callback, NULL, user_callback_data
 }
 
 
+/*
+ * Lightweight change-time collector.
+ *
+ * Iterates the value-change data blocks and decodes only each block's TIME
+ * section, invoking the callback once per block with a pointer to that
+ * block's decompressed time table (the distinct simulation times at which
+ * a value change occurs within the block).  Value-change chains are not
+ * decoded and no per-change callbacks are issued, so the cost is
+ * O(blocks + distinct times) rather than O(value changes).
+ *
+ * Honors fstReaderSetLimitTimeRange()/fstReaderSetUnlimitedTimeRange():
+ * blocks whose end time precedes the limit start are skipped before they
+ * are decoded, and iteration stops once a block begins after the limit
+ * end.  Limiting is block granular, so a returned time table may include
+ * times outside the requested range; callers filter as needed.  The
+ * time_table pointer handed to the callback is owned by this function and
+ * freed immediately after the callback returns, so callers must copy any
+ * values they need to retain.
+ */
+void fstReaderForEachBlockTimeTable(void *ctx,
+        void (*block_time_table_callback)(void *user_callback_data_pointer, uint64_t beg_tim, uint64_t end_tim, const uint64_t *time_table, uint64_t n_items),
+        void *user_callback_data_pointer)
+{
+struct fstReaderContext *xc = (struct fstReaderContext *)ctx;
+fst_off_t blkpos = 0;
+uint64_t seclen, beg_tim, end_tim;
+uint64_t tsec_uclen = 0, tsec_clen = 0, tsec_nitems = 0;
+int sectype;
+
+if((!xc) || (!block_time_table_callback)) { return; }
+
+for(;;)
+        {
+        fstReaderFseeko(xc, xc->f, blkpos, SEEK_SET);
+
+        sectype = fgetc(xc->f);
+        seclen = fstReaderUint64(xc->f);
+
+        if((sectype == EOF) || (sectype == FST_BL_SKIP) || (!seclen))
+                {
+                break;
+                }
+
+        blkpos++;
+        if((sectype != FST_BL_VCDATA) && (sectype != FST_BL_VCDATA_DYN_ALIAS) && (sectype != FST_BL_VCDATA_DYN_ALIAS2))
+                {
+                blkpos += seclen;
+                continue;
+                }
+
+        beg_tim = fstReaderUint64(xc->f);
+        end_tim = fstReaderUint64(xc->f);
+
+        if(xc->limit_range_valid)
+                {
+                if(end_tim < xc->limit_range_start)
+                        {
+                        blkpos += seclen;
+                        continue;
+                        }
+
+                if(beg_tim > xc->limit_range_end)
+                        {
+                        break;
+                        }
+                }
+
+        /* decode the TIME section only (no value-change chains) */
+        {
+        unsigned char *ucdata;
+        unsigned char *cdata;
+        unsigned long destlen;
+        unsigned long sourcelen;
+        int rc;
+        unsigned char *tpnt;
+        uint64_t tpval;
+        uint64_t *time_table;
+        uint64_t ti;
+
+        fstReaderFseeko(xc, xc->f, blkpos + seclen - 24, SEEK_SET);
+        tsec_uclen = fstReaderUint64(xc->f);
+        tsec_clen = fstReaderUint64(xc->f);
+        tsec_nitems = fstReaderUint64(xc->f);
+
+        ucdata = (unsigned char *)malloc(tsec_uclen);
+        if(!ucdata) { break; } /* malloc fail from corrupted tsec_uclen */
+        destlen = tsec_uclen;
+        sourcelen = tsec_clen;
+
+        fstReaderFseeko(xc, xc->f, -24 - ((fst_off_t)tsec_clen), SEEK_CUR);
+        if(tsec_uclen != tsec_clen)
+                {
+                cdata = (unsigned char *)malloc(tsec_clen);
+                fstFread(cdata, tsec_clen, 1, xc->f);
+
+                rc = uncompress(ucdata, &destlen, cdata, sourcelen);
+                if(rc != Z_OK)
+                        {
+                        fprintf(stderr, FST_APIMESS "fstReaderForEachBlockTimeTable(), tsec uncompress rc = %d, exiting.\n", rc);
+                        exit(255);
+                        }
+
+                free(cdata);
+                }
+                else
+                {
+                fstFread(ucdata, tsec_uclen, 1, xc->f);
+                }
+
+        time_table = (uint64_t *)calloc(tsec_nitems ? tsec_nitems : 1, sizeof(uint64_t));
+        tpnt = ucdata;
+        tpval = 0;
+        for(ti=0;ti<tsec_nitems;ti++)
+                {
+                int skiplen;
+                uint64_t val = fstGetVarint64(tpnt, &skiplen);
+                tpval = time_table[ti] = tpval + val;
+                tpnt += skiplen;
+                }
+        free(ucdata);
+
+        block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, time_table, tsec_nitems);
+
+        free(time_table);
+        }
+
+        blkpos += seclen;
+        }
+}
+
+
 int fstReaderIterBlocks2(void *ctx,
         void (*value_change_callback)(void *user_callback_data_pointer, uint64_t time, fstHandle facidx, const unsigned char *value),
         void (*value_change_callback_varlen)(void *user_callback_data_pointer, uint64_t time, fstHandle facidx, const unsigned char *value, uint32_t len),
