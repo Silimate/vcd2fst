@@ -5115,11 +5115,21 @@ for(;;)
         int skiplen;
         uint64_t val;
 
+        /* Seek to the end of the block minus the 24-byte trailer (3 * 8-byte uint64_t fields: 
+           tsec_uclen, tsec_clen, tsec_nitems) */
         if(fstReaderFseeko(xc, xc->f, blkpos + seclen - 24, SEEK_SET) != 0) break;
         tsec_uclen = fstReaderUint64(xc->f);
         tsec_clen = fstReaderUint64(xc->f);
         tsec_nitems = fstReaderUint64(xc->f);
         if(tsec_clen > seclen) break; /* corrupted tsec_clen: by definition it can't be larger than size of section */
+        if(tsec_uclen == 0)
+                {
+                /* Bypassing malloc(0) and decoding for empty/zero-item TIME sections. 
+                   Invoke the callback directly and skip to the next block. */
+                block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, NULL, 0);
+                blkpos += seclen;
+                continue;
+                }
         if(sizeof(size_t) < sizeof(uint64_t))
                 {
                 if(tsec_uclen != (size_t)tsec_uclen) { break; }
@@ -5130,6 +5140,8 @@ for(;;)
         destlen = tsec_uclen;
         sourcelen = tsec_clen;
 
+        /* Seek backward from the current position (the end of the block) past the 24-byte 
+           trailer and the compressed TIME section payload */
         if(fstReaderFseeko(xc, xc->f, -24 - ((fst_off_t)tsec_clen), SEEK_CUR) != 0)
                 {
                 free(ucdata);
