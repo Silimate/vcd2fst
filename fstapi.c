@@ -5155,11 +5155,27 @@ for(;;)
 			}
 		}
         time_table = (uint64_t *)calloc(tsec_nitems, sizeof(uint64_t));
+        if(!time_table)
+                {
+                free(ucdata);
+                break;
+                }
         tpnt = ucdata;
         tpval = 0;
+        unsigned char *ucdata_end = ucdata + tsec_uclen;
         for(ti=0;ti<tsec_nitems;ti++)
                 {
                 int skiplen;
+                unsigned char *p = tpnt;
+                while(p < ucdata_end && (*p & 0x80))
+                        {
+                        p++;
+                        }
+                if(p >= ucdata_end)
+                        {
+                        tsec_nitems = ti;
+                        break;
+                        }
                 uint64_t val = fstGetVarint64(tpnt, &skiplen);
                 tpval = time_table[ti] = tpval + val;
                 tpnt += skiplen;
