@@ -5043,7 +5043,7 @@ return(fstReaderIterBlocks2(ctx, value_change_callback, NULL, user_callback_data
  * blocks whose end time precedes the limit start are skipped before they
  * are decoded, and iteration stops once a block begins after the limit
  * end.  Limiting is block granular, so a returned time table may include
-  * times outside the requested range; callers filter as needed.  The
+ * times outside the requested range; callers filter as needed.  The
  * time_table pointer handed to the callback is NULL when n_items is 0.
  * The time_table pointer is owned by this function and freed immediately
  * after the callback returns, so callers must copy any values they need
@@ -5204,6 +5204,12 @@ for(;;)
                         }
                 }
         free(ucdata);
+
+        if(tsec_nitems == 0 && time_table)
+                {
+                free(time_table);
+                time_table = NULL;
+                }
 
         block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, time_table, tsec_nitems);
 
