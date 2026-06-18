@@ -5043,10 +5043,11 @@ return(fstReaderIterBlocks2(ctx, value_change_callback, NULL, user_callback_data
  * blocks whose end time precedes the limit start are skipped before they
  * are decoded, and iteration stops once a block begins after the limit
  * end.  Limiting is block granular, so a returned time table may include
- * times outside the requested range; callers filter as needed.  The
- * time_table pointer handed to the callback is owned by this function and
- * freed immediately after the callback returns, so callers must copy any
- * values they need to retain.
+  * times outside the requested range; callers filter as needed.  The
+ * time_table pointer handed to the callback is NULL when n_items is 0.
+ * The time_table pointer is owned by this function and freed immediately
+ * after the callback returns, so callers must copy any values they need
+ * to retain.
  */
 void fstReaderForEachBlockTimeTable(void *ctx,
         void (*block_time_table_callback)(void *user_callback_data_pointer, uint64_t beg_tim, uint64_t end_tim, const uint64_t *time_table, uint64_t n_items),
@@ -5117,6 +5118,11 @@ for(;;)
         tsec_clen = fstReaderUint64(xc->f);
         tsec_nitems = fstReaderUint64(xc->f);
         if(tsec_clen > seclen) break; /* corrupted tsec_clen: by definition it can't be larger than size of section */
+        if(sizeof(size_t) < sizeof(uint64_t))
+                {
+                if(tsec_uclen != (size_t)tsec_uclen) { break; }
+                if(tsec_clen != (size_t)tsec_clen) { break; }
+                }
         ucdata = (unsigned char *)malloc(tsec_uclen);
         if(!ucdata) { break; } /* malloc fail from corrupted tsec_uclen */
         destlen = tsec_uclen;
@@ -5175,7 +5181,7 @@ for(;;)
                         }
                 tpnt = ucdata;
                 tpval = 0;
-                ucdata_end = ucdata + tsec_uclen;
+                ucdata_end = ucdata + destlen;
                 for(ti=0;ti<tsec_nitems;ti++)
                         {
                         /* Pre-scan the variable-length integer (varint) at tpnt to find its termination 
