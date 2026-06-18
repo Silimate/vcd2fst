@@ -5149,49 +5149,53 @@ for(;;)
                 fstFread(ucdata, tsec_uclen, 1, xc->f);
                 }
 
-	if(sizeof(size_t) < sizeof(uint64_t))
-		{
-		/* TALOS-2023-1792 for 32b overflow */
-		uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
-		size_t   chk_32 = ((size_t)tsec_nitems) * sizeof(uint64_t);
-		if(chk_64 != chk_32) chk_report_abort("TALOS-2023-1792");
-		}
-	else
-		{
-		uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
-		if((chk_64/sizeof(uint64_t)) != tsec_nitems)
-			{
-			chk_report_abort("TALOS-2023-1792");
-			}
-		}
-        time_table = (uint64_t *)calloc(tsec_nitems, sizeof(uint64_t));
-        if(!time_table)
+        time_table = NULL;
+        if(tsec_nitems > 0)
                 {
-                free(ucdata);
-                break;
-                }
-        tpnt = ucdata;
-        tpval = 0;
-        ucdata_end = ucdata + tsec_uclen;
-        for(ti=0;ti<tsec_nitems;ti++)
-                {
-                /* Pre-scan the variable-length integer (varint) at tpnt to find its termination 
-                   (byte with the MSB unset) before calling fstGetVarint64. This prevents 
-                   fstGetVarint64 from reading off the end of ucdata if the file lies about 
-                   tsec_nitems or has corrupted varint records. */
-                p = tpnt;
-                while(p < ucdata_end && (*p & 0x80))
+                if(sizeof(size_t) < sizeof(uint64_t))
                         {
-                        p++;
+                        /* TALOS-2023-1792 for 32b overflow */
+                        uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
+                        size_t   chk_32 = ((size_t)tsec_nitems) * sizeof(uint64_t);
+                        if(chk_64 != chk_32) chk_report_abort("TALOS-2023-1792");
                         }
-                if(p >= ucdata_end)
+                else
                         {
-                        tsec_nitems = ti;
+                        uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
+                        if((chk_64/sizeof(uint64_t)) != tsec_nitems)
+                                {
+                                chk_report_abort("TALOS-2023-1792");
+                                }
+                        }
+                time_table = (uint64_t *)calloc(tsec_nitems, sizeof(uint64_t));
+                if(!time_table)
+                        {
+                        free(ucdata);
                         break;
                         }
-                val = fstGetVarint64(tpnt, &skiplen);
-                tpval = time_table[ti] = tpval + val;
-                tpnt += skiplen;
+                tpnt = ucdata;
+                tpval = 0;
+                ucdata_end = ucdata + tsec_uclen;
+                for(ti=0;ti<tsec_nitems;ti++)
+                        {
+                        /* Pre-scan the variable-length integer (varint) at tpnt to find its termination 
+                           (byte with the MSB unset) before calling fstGetVarint64. This prevents 
+                           fstGetVarint64 from reading off the end of ucdata if the file lies about 
+                           tsec_nitems or has corrupted varint records. */
+                        p = tpnt;
+                        while(p < ucdata_end && (*p & 0x80))
+                                {
+                                p++;
+                                }
+                        if(p >= ucdata_end)
+                                {
+                                tsec_nitems = ti;
+                                break;
+                                }
+                        val = fstGetVarint64(tpnt, &skiplen);
+                        tpval = time_table[ti] = tpval + val;
+                        tpnt += skiplen;
+                        }
                 }
         free(ucdata);
 
