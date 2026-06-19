@@ -128,9 +128,11 @@ void **JenkinsIns(void *base_i, const unsigned char *mem, uint32_t length, uint3
 #define FST_HDR_DATE_SIZE               (119)
 #define FST_HDR_FILETYPE_SIZE           (1)
 #define FST_HDR_TIMEZERO_SIZE           (8)
+#define FST_VARINT_CONTINUATION_MASK    0x80
 #define FST_GZIO_LEN                    (32768)
 #define FST_HDR_FOURPACK_DUO_SIZE       (4*1024*1024)
 #define FST_ZWRAPPER_HDR_SIZE           (1+8+8)
+#define FST_BLOCK_TIME_TRAILER_SIZE     24
 
 #if defined(__APPLE__) && defined(__MACH__)
 #define FST_MACOSX
@@ -5026,6 +5028,234 @@ int fstReaderIterBlocks(void *ctx,
         void *user_callback_data_pointer, FILE *fv)
 {
 return(fstReaderIterBlocks2(ctx, value_change_callback, NULL, user_callback_data_pointer, fv));
+}
+
+
+/*
+ * Lightweight change-time collector.
+ *
+ * Iterates the value-change data blocks and decodes only each block's TIME
+ * section, invoking the callback once per block with a pointer to that
+ * block's decompressed time table (the distinct simulation times at which
+ * a value change occurs within the block).  Value-change chains are not
+ * decoded and no per-change callbacks are issued, so the cost is
+ * O(blocks + distinct times) rather than O(value changes).
+ *
+ * Honors fstReaderSetLimitTimeRange()/fstReaderSetUnlimitedTimeRange():
+ * blocks whose end time precedes the limit start are skipped before they
+ * are decoded, and iteration stops once a block begins after the limit
+ * end.  Limiting is block granular, so a returned time table may include
+ * times outside the requested range; callers filter as needed.  A corrupted
+ * TIME section may cause n_items to be less than the count recorded in the
+ * block header; callers should not assume the table is complete.  The
+ * time_table pointer handed to the callback is NULL when n_items is 0.
+ * The time_table pointer is owned by this function and freed immediately
+ * after the callback returns, so callers must copy any values they need
+ * to retain.
+ */
+void fstReaderForEachBlockTimeTable(void *ctx,
+        void (*block_time_table_callback)(void *user_callback_data_pointer, uint64_t beg_tim, uint64_t end_tim, const uint64_t *time_table, uint64_t n_items),
+        void *user_callback_data_pointer)
+{
+struct fstReaderContext *xc = (struct fstReaderContext *)ctx;
+fst_off_t blkpos = 0;
+uint64_t seclen, beg_tim, end_tim;
+uint64_t tsec_uclen = 0, tsec_clen = 0, tsec_nitems = 0;
+int sectype;
+
+if((!xc) || (!block_time_table_callback)) { return; }
+
+for(;;)
+        {
+        fstReaderFseeko(xc, xc->f, blkpos, SEEK_SET);
+
+        sectype = fgetc(xc->f);
+        seclen = fstReaderUint64(xc->f);
+
+        if((sectype == EOF) || (sectype == FST_BL_SKIP) || (!seclen))
+                {
+                break;
+                }
+
+        blkpos++;
+        if((sectype != FST_BL_VCDATA) && (sectype != FST_BL_VCDATA_DYN_ALIAS) && (sectype != FST_BL_VCDATA_DYN_ALIAS2))
+                {
+                blkpos += seclen;
+                continue;
+                }
+
+        if(seclen < FST_BLOCK_TIME_TRAILER_SIZE)
+                {
+                blkpos += seclen;
+                continue;
+                }
+
+        beg_tim = fstReaderUint64(xc->f);
+        end_tim = fstReaderUint64(xc->f);
+
+        if(xc->limit_range_valid)
+                {
+                if(end_tim < xc->limit_range_start)
+                        {
+                        blkpos += seclen;
+                        continue;
+                        }
+
+                if(beg_tim > xc->limit_range_end)
+                        {
+                        break;
+                        }
+                }
+
+        /* decode the TIME section only (no value-change chains) */
+        {
+        unsigned char *ucdata;
+        unsigned char *cdata;
+        /* destlen and sourcelen are unsigned long (which is 32-bit on LLP64/Windows) to match
+           zlib's uLongf parameters and the file-wide uncompress() conventions. Because conformant 
+           FST writers enforce a hard block-size limit via FST_BREAK_SIZE_MAX (capped at 2 GB), 
+           tsec_uclen and tsec_clen are mathematically guaranteed to never exceed 32-bit limits 
+           on any well-formed FST file. */
+        unsigned long destlen;
+        unsigned long sourcelen;
+        int rc;
+        unsigned char *tpnt;
+        uint64_t tpval;
+        uint64_t *time_table;
+        uint64_t ti;
+        unsigned char *ucdata_end;
+        unsigned char *p;
+        int skiplen;
+        uint64_t val;
+
+        /* Seek to the end of the block minus the 24-byte trailer (3 * 8-byte uint64_t fields: 
+           tsec_uclen, tsec_clen, tsec_nitems) */
+        if(fstReaderFseeko(xc, xc->f, blkpos + seclen - FST_BLOCK_TIME_TRAILER_SIZE, SEEK_SET) != 0) break;
+        tsec_uclen = fstReaderUint64(xc->f);
+        tsec_clen = fstReaderUint64(xc->f);
+        tsec_nitems = fstReaderUint64(xc->f);
+        if(tsec_clen > seclen) break; /* corrupted tsec_clen: by definition it can't be larger than size of section */
+        if(tsec_uclen == 0)
+                {
+                /* Bypassing malloc(0) and decoding for empty/zero-item TIME sections. 
+                   Invoke the callback directly and skip to the next block. */
+                block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, NULL, 0);
+                blkpos += seclen;
+                continue;
+                }
+        if(sizeof(size_t) < sizeof(uint64_t))
+                {
+                if(tsec_uclen != (size_t)tsec_uclen) { break; }
+                if(tsec_clen != (size_t)tsec_clen) { break; }
+                }
+        ucdata = (unsigned char *)malloc(tsec_uclen);
+        if(!ucdata) { break; } /* malloc fail from corrupted tsec_uclen */
+        destlen = tsec_uclen;
+        sourcelen = tsec_clen;
+
+        /* Seek backward from the current position (the end of the block) past the 24-byte 
+           trailer and the compressed TIME section payload */
+        if(fstReaderFseeko(xc, xc->f, -FST_BLOCK_TIME_TRAILER_SIZE - ((fst_off_t)tsec_clen), SEEK_CUR) != 0)
+                {
+                free(ucdata);
+                break;
+                }
+        if(tsec_uclen != tsec_clen)
+                {
+                cdata = (unsigned char *)malloc(tsec_clen);
+                if(!cdata) { free(ucdata); break; }
+                if(tsec_clen > 0 && fstFread(cdata, tsec_clen, 1, xc->f) != 1)
+                        {
+                        free(cdata);
+                        free(ucdata);
+                        break;
+                        }
+
+                rc = uncompress(ucdata, &destlen, cdata, sourcelen);
+                if(rc != Z_OK)
+                        {
+                        fprintf(stderr, FST_APIMESS "fstReaderForEachBlockTimeTable(), tsec uncompress rc = %d, failure.\n", rc);
+                        free(cdata);
+                        free(ucdata);
+                        break;
+                        }
+
+                free(cdata);
+                }
+                else
+                {
+                if(tsec_uclen > 0 && fstFread(ucdata, tsec_uclen, 1, xc->f) != 1)
+                        {
+                        free(ucdata);
+                        break;
+                        }
+                }
+
+        time_table = NULL;
+        if(tsec_nitems > 0)
+                {
+                if(sizeof(size_t) < sizeof(uint64_t))
+                        {
+                        /* TALOS-2023-1792 for 32b overflow */
+                        uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
+                        size_t   chk_32 = ((size_t)tsec_nitems) * sizeof(uint64_t);
+                        if(chk_64 != chk_32) chk_report_abort("TALOS-2023-1792");
+                        }
+                else
+                        {
+                        uint64_t chk_64 = tsec_nitems * sizeof(uint64_t);
+                        if((chk_64/sizeof(uint64_t)) != tsec_nitems)
+                                {
+                                chk_report_abort("TALOS-2023-1792");
+                                }
+                        }
+                time_table = (uint64_t *)calloc(tsec_nitems, sizeof(uint64_t));
+                if(!time_table)
+                        {
+                        free(ucdata);
+                        break;
+                        }
+                tpnt = ucdata;
+                tpval = 0;
+                ucdata_end = ucdata + destlen;
+                for(ti=0;ti<tsec_nitems;ti++)
+                        {
+                        /* Pre-scan the variable-length integer (varint) at tpnt to find its termination 
+                           (byte with the MSB unset) before calling fstGetVarint64. This prevents 
+                           fstGetVarint64 from reading off the end of ucdata if the file lies about 
+                           tsec_nitems or has corrupted varint records. */
+                        p = tpnt;
+                        while(p < ucdata_end && (*p & FST_VARINT_CONTINUATION_MASK))
+                                {
+                                p++;
+                                }
+                        if(p >= ucdata_end)
+                                {
+                                tsec_nitems = ti;
+                                break;
+                                }
+                        val = fstGetVarint64(tpnt, &skiplen);
+                        tpval = time_table[ti] = tpval + val;
+                        tpnt += skiplen;
+                        }
+                }
+        free(ucdata);
+
+        /* Restore the NULL time_table invariant if the pre-scan above truncated
+           tsec_nitems to 0 mid-decode, leaving time_table as a live allocation. */
+        if(tsec_nitems == 0 && time_table)
+                {
+                free(time_table);
+                time_table = NULL;
+                }
+
+        block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, time_table, tsec_nitems);
+
+        free(time_table);
+        }
+
+        blkpos += seclen;
+        }
 }
 
 
