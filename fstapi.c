@@ -5084,6 +5084,12 @@ for(;;)
                 continue;
                 }
 
+        if(seclen < FST_BLOCK_TIME_TRAILER_SIZE)
+                {
+                blkpos += seclen;
+                continue;
+                }
+
         beg_tim = fstReaderUint64(xc->f);
         end_tim = fstReaderUint64(xc->f);
 
@@ -5235,6 +5241,8 @@ for(;;)
                 }
         free(ucdata);
 
+        /* Restore the NULL time_table invariant if the pre-scan above truncated
+           tsec_nitems to 0 mid-decode, leaving time_table as a live allocation. */
         if(tsec_nitems == 0 && time_table)
                 {
                 free(time_table);
