@@ -5054,7 +5054,7 @@ return(fstReaderIterBlocks2(ctx, value_change_callback, NULL, user_callback_data
  * to retain.
  */
 void fstReaderForEachBlockTimeTable(void *ctx,
-        void (*block_time_table_callback)(void *user_callback_data_pointer, uint64_t beg_tim, uint64_t end_tim, const uint64_t *time_table, uint64_t n_items),
+        uint32_t (*block_time_table_callback)(void *user_callback_data_pointer, uint64_t beg_tim, uint64_t end_tim, const uint64_t *time_table, uint64_t n_items),
         void *user_callback_data_pointer)
 {
 struct fstReaderContext *xc = (struct fstReaderContext *)ctx;
@@ -5062,6 +5062,7 @@ fst_off_t blkpos = 0;
 uint64_t seclen, beg_tim, end_tim;
 uint64_t tsec_uclen = 0, tsec_clen = 0, tsec_nitems = 0;
 int sectype;
+uint32_t done = 0;
 
 if((!xc) || (!block_time_table_callback)) { return; }
 
@@ -5139,7 +5140,7 @@ for(;;)
                 {
                 /* Bypassing malloc(0) and decoding for empty/zero-item TIME sections. 
                    Invoke the callback directly and skip to the next block. */
-                block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, NULL, 0);
+                done = block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, NULL, 0);
                 blkpos += seclen;
                 continue;
                 }
@@ -5249,12 +5250,15 @@ for(;;)
                 time_table = NULL;
                 }
 
-        block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, time_table, tsec_nitems);
+        done = block_time_table_callback(user_callback_data_pointer, beg_tim, end_tim, time_table, tsec_nitems);
 
         free(time_table);
         }
 
         blkpos += seclen;
+
+        if (done)
+          break;
         }
 }
 

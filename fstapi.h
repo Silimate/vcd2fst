@@ -439,7 +439,7 @@ int             fstReaderIterBlocks2(void *ctx,
                         void *user_callback_data_pointer, FILE *vcdhandle);
 void            fstReaderIterBlocksSetNativeDoublesOnCallback(void *ctx, int enable);
 void            fstReaderForEachBlockTimeTable(void *ctx,
-                        void (*block_time_table_callback)(void *user_callback_data_pointer, uint64_t beg_tim, uint64_t end_tim, const uint64_t *time_table, uint64_t n_items),
+                        uint32_t (*block_time_table_callback)(void *user_callback_data_pointer, uint64_t beg_tim, uint64_t end_tim, const uint64_t *time_table, uint64_t n_items),
                         void *user_callback_data_pointer);
 void *          fstReaderOpen(const char *nam);
 void *          fstReaderOpenForUtilitiesOnly(void);
