@@ -405,6 +405,121 @@ int pack_type = FST_WR_PT_LZ4; /* set to fstWriterPackType */
 int compression_explicitly_set = 0;
 int repack_all = 0; /* 0 is normal, 1 does the repack (via fstapi) at end */
 int parallel_mode = 0; /* 0 is is single threaded, 1 is multi-threaded */
+char *scope_filter = NULL; /* -s PATH: keep PATH and below; NULL = full dump */
+
+/* Split dotted scope path (e.g. tb.uut) into strdup'd parts. Caller frees. */
+static char **split_scope_path(const char *scope, int *n_out)
+{
+    char *copy;
+    char *tok;
+    char **parts;
+    int n = 0;
+    int cap = 0;
+
+    *n_out = 0;
+    if (!scope || !*scope) {
+        return NULL;
+    }
+
+    copy = strdup(scope);
+    parts = NULL;
+    for (tok = strtok(copy, "."); tok; tok = strtok(NULL, ".")) {
+        if (!*tok) {
+            continue;
+        }
+        if (n >= cap) {
+            cap = cap ? cap * 2 : 8;
+            parts = (char **)realloc_2(parts, cap * sizeof(char *));
+        }
+        parts[n++] = strdup(tok);
+    }
+    free(copy);
+
+    if (!n) {
+        free(parts);
+        return NULL;
+    }
+
+    *n_out = n;
+    return parts;
+}
+
+/* True if stack matches scope_parts for min(depth, nparts) — on path or under. */
+static int scope_on_path_or_under(char **stack, int depth, char **parts, int nparts)
+{
+    int i;
+    int check;
+
+    if (!nparts) {
+        return 1;
+    }
+    check = (depth < nparts) ? depth : nparts;
+    for (i = 0; i < check; i++) {
+        if (strcmp(stack[i], parts[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* True if current scope is at or under the filter target (vars kept). */
+static int scope_under_target(char **stack, int depth, char **parts, int nparts)
+{
+    int i;
+
+    if (!nparts) {
+        return 1;
+    }
+    if (depth < nparts) {
+        return 0;
+    }
+    for (i = 0; i < nparts; i++) {
+        if (strcmp(stack[i], parts[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void scope_stack_push(char ***stack, unsigned char **emitted, int *depth, int *cap,
+                             const char *name, int emit)
+{
+    if (*depth >= *cap) {
+        *cap = *cap ? (*cap * 2) : 64;
+        *stack = (char **)realloc_2(*stack, (size_t)(*cap) * sizeof(char *));
+        *emitted = (unsigned char *)realloc_2(*emitted, (size_t)(*cap) * sizeof(unsigned char));
+    }
+    (*stack)[*depth] = strdup(name ? name : "");
+    (*emitted)[*depth] = emit ? 1 : 0;
+    (*depth)++;
+}
+
+static int scope_stack_pop_emitted(char **stack, unsigned char *emitted, int *depth)
+{
+    int did_emit = 1;
+
+    if (*depth <= 0) {
+        return 1;
+    }
+    (*depth)--;
+    did_emit = emitted[*depth] ? 1 : 0;
+    free(stack[*depth]);
+    stack[*depth] = NULL;
+    return did_emit;
+}
+
+static void free_scope_parts(char **parts, int nparts)
+{
+    int i;
+
+    if (!parts) {
+        return;
+    }
+    for (i = 0; i < nparts; i++) {
+        free(parts[i]);
+    }
+    free(parts);
+}
 
 #ifdef VCD2FST_EXTLOADERS_CONV
 static int suffix_check(const char *s, const char *sfx)
@@ -439,8 +554,20 @@ int fst_main(char *vname, char *fstname)
     void *xc = NULL;
 #endif
     int port_encountered = 0;
+    char **scope_parts = NULL;
+    int scope_nparts = 0;
+    char **scope_stack = NULL;
+    unsigned char *scope_emitted = NULL;
+    int scope_depth = 0;
+    int scope_stack_cap = 0;
 
     bin_fixbuff = (char*) malloc(bin_fixbuff_len);
+
+    if (scope_filter && *scope_filter) {
+        scope_parts = split_scope_path(scope_filter, &scope_nparts);
+        /* Skipping vars breaks handle==vcdid hash; always use string id map. */
+        hash_kill = 1;
+    }
 
     if (!strcmp("-", vname)) {
         f = stdin;
@@ -699,39 +826,53 @@ int fst_main(char *vname, char *fstname)
                     *(st - 1) = ' ';
                 }
 
-                node = jrb_find_str(vcd_ids, (char *)vcd_id);
-                if (!node) {
-                    Jval val;
-                    returnedhandle = fstWriterCreateVar(
-                        ctx,
-                        vartype,
-                        (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
-                                       : var_direction[var_direction_idx++]),
-                        len,
-                        nam,
-                        0);
-                    val.i = returnedhandle;
-                    jrb_insert_str(vcd_ids, strdup(vcd_id), val)->val2.i = len;
-                    vars_created++;
+                if (scope_nparts &&
+                    !scope_under_target(scope_stack, scope_depth, scope_parts, scope_nparts)) {
+#if defined(VCD2FST_EXTLOAD_CONV)
+                    /* Keep fac direction stream aligned with full VCD order. */
+                    if (var_direction) {
+                        var_direction_idx++;
+                        if (var_direction_idx == numfacs) {
+                            free(var_direction);
+                            var_direction = NULL;
+                        }
+                    }
+#endif
                 } else {
-                    fstWriterCreateVar(ctx,
-                                       vartype,
-                                       (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
-                                                      : var_direction[var_direction_idx++]),
-                                       node->val2.i,
-                                       nam,
-                                       node->val.i);
-                    aliases++;
-                }
+                    node = jrb_find_str(vcd_ids, (char *)vcd_id);
+                    if (!node) {
+                        Jval val;
+                        returnedhandle = fstWriterCreateVar(
+                            ctx,
+                            vartype,
+                            (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
+                                           : var_direction[var_direction_idx++]),
+                            len,
+                            nam,
+                            0);
+                        val.i = returnedhandle;
+                        jrb_insert_str(vcd_ids, strdup(vcd_id), val)->val2.i = len;
+                        vars_created++;
+                    } else {
+                        fstWriterCreateVar(ctx,
+                                           vartype,
+                                           (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
+                                                          : var_direction[var_direction_idx++]),
+                                           node->val2.i,
+                                           nam,
+                                           node->val.i);
+                        aliases++;
+                    }
 
 #if defined(VCD2FST_EXTLOAD_CONV)
-                if (var_direction) {
-                    if (var_direction_idx == numfacs) {
-                        free(var_direction);
-                        var_direction = NULL;
+                    if (var_direction) {
+                        if (var_direction_idx == numfacs) {
+                            free(var_direction);
+                            var_direction = NULL;
+                        }
                     }
-                }
 #endif
+                }
             }
         } else if (!strncmp(buf1, "scope", 5)) {
             char *st = strtok(buf + 6, " \t");
@@ -829,62 +970,100 @@ int fst_main(char *vname, char *fstname)
 
             st = strtok(NULL, " \t");
 
+            {
+                int emit_scope = 1;
+
+                if (scope_nparts) {
+                    scope_stack_push(&scope_stack,
+                                     &scope_emitted,
+                                     &scope_depth,
+                                     &scope_stack_cap,
+                                     st,
+                                     0);
+                    emit_scope = scope_on_path_or_under(scope_stack,
+                                                       scope_depth,
+                                                       scope_parts,
+                                                       scope_nparts);
+                    scope_emitted[scope_depth - 1] = emit_scope ? 1 : 0;
+                }
+
+                if (!emit_scope) {
+#if defined(VCD2FST_EXTLOAD_CONV)
+                    /* Keep extload reader hierarchy aligned even when filtered out. */
+                    if (xc) {
+                        fstReaderPushScope(xc, st, NULL);
+                    }
+#endif
+                } else {
 #if defined(VCD2FST_EXTLOAD_CONV)
 #ifdef _WAVE_HAVE_JUDY
-            if (PJArray) {
-                const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
-                PPvoid_t PPValue = JudySLGet(PJArray, (uint8_t *)fst_scope_name2, PJE0);
+                    if (PJArray) {
+                        const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
+                        PPvoid_t PPValue = JudySLGet(PJArray, (uint8_t *)fst_scope_name2, PJE0);
 
-                if (PPValue) {
-                    unsigned char st_replace = (*((unsigned char *)*PPValue)) - 1;
-                    if (st_replace != FST_ST_VCD_MODULE) {
-                        scopetype = st_replace;
+                        if (PPValue) {
+                            unsigned char st_replace = (*((unsigned char *)*PPValue)) - 1;
+                            if (st_replace != FST_ST_VCD_MODULE) {
+                                scopetype = st_replace;
+                            }
+
+                            if ((scopetype == FST_ST_VCD_GENERATE) ||
+                                (scopetype == FST_ST_VCD_STRUCT)) {
+                                PPValue = NULL;
+                            }
+
+                            fstWriterSetScope(ctx,
+                                              scopetype,
+                                              st,
+                                              PPValue ? ((char *)(*PPValue) + 1) : NULL);
+                        } else {
+                            fstWriterSetScope(ctx, scopetype, st, NULL);
+                        }
                     }
-
-                    if ((scopetype == FST_ST_VCD_GENERATE) || (scopetype == FST_ST_VCD_STRUCT)) {
-                        PPValue = NULL;
-                    }
-
-                    fstWriterSetScope(ctx,
-                                      scopetype,
-                                      st,
-                                      PPValue ? ((char *)(*PPValue) + 1) : NULL);
-                } else {
-                    fstWriterSetScope(ctx, scopetype, st, NULL);
-                }
-            }
 #else
-            if (comp_name_jrb) {
-                const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
-                char cstring[65537];
-                JRB str;
+                    if (comp_name_jrb) {
+                        const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
+                        char cstring[65537];
+                        JRB str;
 
-                strcpy(cstring, fst_scope_name2);
-                str = jrb_find_str(comp_name_jrb, cstring);
+                        strcpy(cstring, fst_scope_name2);
+                        str = jrb_find_str(comp_name_jrb, cstring);
 
-                if (str) {
-                    unsigned char st_replace = str->val.s[0] - 1;
-                    if (st_replace != FST_ST_VCD_MODULE) {
-                        scopetype = st_replace;
+                        if (str) {
+                            unsigned char st_replace = str->val.s[0] - 1;
+                            if (st_replace != FST_ST_VCD_MODULE) {
+                                scopetype = st_replace;
+                            }
+
+                            if ((scopetype == FST_ST_VCD_GENERATE) ||
+                                (scopetype == FST_ST_VCD_STRUCT)) {
+                                str = NULL;
+                            }
+
+                            fstWriterSetScope(ctx, scopetype, st, str ? (str->val.s + 1) : NULL);
+                        } else {
+                            fstWriterSetScope(ctx, scopetype, st, NULL);
+                        }
                     }
-
-                    if ((scopetype == FST_ST_VCD_GENERATE) || (scopetype == FST_ST_VCD_STRUCT)) {
-                        str = NULL;
+#endif
+                    else
+#endif
+                    {
+                        fstWriterSetScope(ctx, scopetype, st, NULL);
                     }
-
-                    fstWriterSetScope(ctx, scopetype, st, str ? (str->val.s + 1) : NULL);
-                } else {
-                    fstWriterSetScope(ctx, scopetype, st, NULL);
                 }
-            }
-#endif
-            else
-#endif
-            {
-                fstWriterSetScope(ctx, scopetype, st, NULL);
             }
         } else if (!strncmp(buf1, "upscope", 7)) {
-            fstWriterSetUpscope(ctx);
+            {
+                int did_emit = 1;
+
+                if (scope_nparts) {
+                    did_emit = scope_stack_pop_emitted(scope_stack, scope_emitted, &scope_depth);
+                }
+                if (did_emit) {
+                    fstWriterSetUpscope(ctx);
+                }
+            }
 #if defined(VCD2FST_EXTLOAD_CONV)
             if (xc) {
                 fstReaderPopScope(xc);
@@ -1153,14 +1332,14 @@ int fst_main(char *vname, char *fstname)
                     hash = vcdid_hash(buf + 1, nl - (buf + 1));
                     if (hash >= 1 && hash <= hash_max) {
                         fstWriterEmitValueChange(ctx, hash, buf);
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 } else {
                     node = jrb_find_str(vcd_ids, buf + 1);
                     if (node) {
                         fstWriterEmitValueChange(ctx, node->val.i, buf);
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 }
@@ -1190,7 +1369,9 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, nl - (sp + 1));
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
+                        if (!scope_nparts) {
+                            bad_changes++;
+                        }
                         break;
                     }
                     int bin_len = sp - (buf + 1); /* strlen(buf+1) */
@@ -1229,7 +1410,7 @@ int fst_main(char *vname, char *fstname)
                             memcpy(bin_fixbuff + delta, buf + 1, bin_len);
                             fstWriterEmitValueChange(ctx, node->val.i, bin_fixbuff);
                         }
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 }
@@ -1245,7 +1426,9 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, nl - (sp + 1));
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
+                        if (!scope_nparts) {
+                            bad_changes++;
+                        }
                         break;
                     }
                     int bin_len = sp - (buf + 1); /* strlen(buf+1) */
@@ -1259,7 +1442,7 @@ int fst_main(char *vname, char *fstname)
 
                         bin_len = fstUtilityEscToBin(NULL, (unsigned char *)(buf + 1), bin_len);
                         fstWriterEmitVariableLengthValueChange(ctx, node->val.i, buf + 1, bin_len);
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 }
@@ -1311,7 +1494,9 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, strlen(sp + 1)); /* nl is no longer good here */
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
+                        if (!scope_nparts) {
+                            bad_changes++;
+                        }
                         break;
                     }
                     fstWriterEmitValueChange(ctx, hash, bin_fixbuff);
@@ -1319,7 +1504,7 @@ int fst_main(char *vname, char *fstname)
                     node = jrb_find_str(vcd_ids, sp + 1);
                     if (node) {
                         fstWriterEmitValueChange(ctx, node->val.i, bin_fixbuff);
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 }
@@ -1334,7 +1519,9 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, nl - (sp + 1));
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
+                        if (!scope_nparts) {
+                            bad_changes++;
+                        }
                         break;
                     }
                     sscanf(buf + 1, "%lg", &doub);
@@ -1344,7 +1531,7 @@ int fst_main(char *vname, char *fstname)
                     if (node) {
                         sscanf(buf + 1, "%lg", &doub);
                         fstWriterEmitValueChange(ctx, node->val.i, &doub);
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 }
@@ -1359,14 +1546,14 @@ int fst_main(char *vname, char *fstname)
                     hash = vcdid_hash(buf + 1, nl - (buf + 1));
                     if (hash >= 1 && hash <= hash_max) {
                         fstWriterEmitValueChange(ctx, hash, buf);
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 } else {
                     node = jrb_find_str(vcd_ids, buf + 1);
                     if (node) {
                         fstWriterEmitValueChange(ctx, node->val.i, buf);
-                    } else {
+                    } else if (!scope_nparts) {
                         bad_changes++;
                     }
                 }
@@ -1422,6 +1609,17 @@ int fst_main(char *vname, char *fstname)
         jrb_free_tree(vcd_ids);
         vcd_ids = NULL;
     }
+
+    while (scope_depth > 0) {
+        scope_stack_pop_emitted(scope_stack, scope_emitted, &scope_depth);
+    }
+    free(scope_stack);
+    scope_stack = NULL;
+    free(scope_emitted);
+    scope_emitted = NULL;
+    free_scope_parts(scope_parts, scope_nparts);
+    scope_parts = NULL;
+    scope_nparts = 0;
 
     free(bin_fixbuff);
     bin_fixbuff = NULL;
@@ -1487,6 +1685,7 @@ void print_help(char *nam)
            "  -Z, --zlibpack             use zlib algorithm for size\n"
            "  -c, --compress             zlib compress entire file on close\n"
            "  -p, --parallel             enable parallel mode\n"
+           "  -s, --scope=PATH           keep only PATH and below (e.g. tb.uut)\n"
            "  -h, --help                 display this help then exit\n\n"
 
            "Note that VCDFILE and FSTFILE are optional provided the\n"
@@ -1511,6 +1710,7 @@ void print_help(char *nam)
            "  -Z                         use zlib algorithm for size\n"
            "  -c                         zlib compress entire file on close\n"
            "  -p                         enable parallel mode\n"
+           "  -s PATH                    keep only PATH and below (e.g. tb.uut)\n"
            "  -h                         display this help then exit\n\n"
 
            "Note that VCDFILE and FSTFILE are optional provided the\n"
@@ -1550,12 +1750,13 @@ int main(int argc, char **argv)
                                                {"zlibpack", 0, 0, 'Z'},
                                                {"compress", 0, 0, 'c'},
                                                {"parallel", 0, 0, 'p'},
+                                               {"scope", 1, 0, 's'},
                                                {"help", 0, 0, 'h'},
                                                {0, 0, 0, 0}};
 
-        c = getopt_long(argc, argv, "v:f:ZF4cph", long_options, &option_index);
+        c = getopt_long(argc, argv, "v:f:s:ZF4cph", long_options, &option_index);
 #else
-        c = getopt(argc, argv, "v:f:ZF4cph");
+        c = getopt(argc, argv, "v:f:s:ZF4cph");
 #endif
 
         if (c == -1)
@@ -1599,6 +1800,13 @@ int main(int argc, char **argv)
                 parallel_mode = 1;
                 break;
 
+            case 's':
+                if (scope_filter)
+                    free(scope_filter);
+                scope_filter = (char *)malloc(strlen(optarg) + 1);
+                strcpy(scope_filter, optarg);
+                break;
+
             case 'h':
                 print_help(argv[0]);
                 break;
@@ -1639,6 +1847,8 @@ int main(int argc, char **argv)
 
     free(vname);
     free(lxname);
+    free(scope_filter);
+    scope_filter = NULL;
 
     return rc;
 }
