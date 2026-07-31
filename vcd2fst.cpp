@@ -482,7 +482,7 @@ static int scope_under_target(char **stack, int depth, char **parts, int nparts)
 }
 
 static void scope_stack_push(char ***stack, unsigned char **emitted, int *depth, int *cap,
-                             const char *name, int emit)
+                             const char *name)
 {
     if (*depth >= *cap) {
         *cap = *cap ? (*cap * 2) : 64;
@@ -490,7 +490,7 @@ static void scope_stack_push(char ***stack, unsigned char **emitted, int *depth,
         *emitted = (unsigned char *)realloc_2(*emitted, (size_t)(*cap) * sizeof(unsigned char));
     }
     (*stack)[*depth] = strdup(name ? name : "");
-    (*emitted)[*depth] = emit ? 1 : 0;
+    (*emitted)[*depth] = 0;
     (*depth)++;
 }
 
@@ -565,6 +565,11 @@ int fst_main(char *vname, char *fstname)
 
     if (scope_filter && *scope_filter) {
         scope_parts = split_scope_path(scope_filter, &scope_nparts);
+        if (!scope_nparts) {
+            fprintf(stderr, "vcd2fst: ERROR: empty -s scope path '%s'\n", scope_filter);
+            free(bin_fixbuff);
+            return (255);
+        }
         /* Skipping vars breaks handle==vcdid hash; always use string id map. */
         hash_kill = 1;
     }
@@ -829,7 +834,6 @@ int fst_main(char *vname, char *fstname)
                 if (scope_nparts &&
                     !scope_under_target(scope_stack, scope_depth, scope_parts, scope_nparts)) {
 #if defined(VCD2FST_EXTLOAD_CONV)
-                    /* Keep fac direction stream aligned with full VCD order. */
                     if (var_direction) {
                         var_direction_idx++;
                         if (var_direction_idx == numfacs) {
@@ -839,38 +843,38 @@ int fst_main(char *vname, char *fstname)
                     }
 #endif
                 } else {
-                    node = jrb_find_str(vcd_ids, (char *)vcd_id);
-                    if (!node) {
-                        Jval val;
-                        returnedhandle = fstWriterCreateVar(
-                            ctx,
-                            vartype,
-                            (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
-                                           : var_direction[var_direction_idx++]),
-                            len,
-                            nam,
-                            0);
-                        val.i = returnedhandle;
-                        jrb_insert_str(vcd_ids, strdup(vcd_id), val)->val2.i = len;
-                        vars_created++;
-                    } else {
-                        fstWriterCreateVar(ctx,
-                                           vartype,
-                                           (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
-                                                          : var_direction[var_direction_idx++]),
-                                           node->val2.i,
-                                           nam,
-                                           node->val.i);
-                        aliases++;
-                    }
+                node = jrb_find_str(vcd_ids, (char *)vcd_id);
+                if (!node) {
+                    Jval val;
+                    returnedhandle = fstWriterCreateVar(
+                        ctx,
+                        vartype,
+                        (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
+                                       : var_direction[var_direction_idx++]),
+                        len,
+                        nam,
+                        0);
+                    val.i = returnedhandle;
+                    jrb_insert_str(vcd_ids, strdup(vcd_id), val)->val2.i = len;
+                    vars_created++;
+                } else {
+                    fstWriterCreateVar(ctx,
+                                       vartype,
+                                       (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
+                                                      : var_direction[var_direction_idx++]),
+                                       node->val2.i,
+                                       nam,
+                                       node->val.i);
+                    aliases++;
+                }
 
 #if defined(VCD2FST_EXTLOAD_CONV)
-                    if (var_direction) {
-                        if (var_direction_idx == numfacs) {
-                            free(var_direction);
-                            var_direction = NULL;
-                        }
+                if (var_direction) {
+                    if (var_direction_idx == numfacs) {
+                        free(var_direction);
+                        var_direction = NULL;
                     }
+                }
 #endif
                 }
             }
@@ -974,22 +978,15 @@ int fst_main(char *vname, char *fstname)
                 int emit_scope = 1;
 
                 if (scope_nparts) {
-                    scope_stack_push(&scope_stack,
-                                     &scope_emitted,
-                                     &scope_depth,
-                                     &scope_stack_cap,
-                                     st,
-                                     0);
-                    emit_scope = scope_on_path_or_under(scope_stack,
-                                                       scope_depth,
-                                                       scope_parts,
-                                                       scope_nparts);
+                    scope_stack_push(&scope_stack, &scope_emitted, &scope_depth,
+                                     &scope_stack_cap, st);
+                    emit_scope = scope_on_path_or_under(scope_stack, scope_depth,
+                                                       scope_parts, scope_nparts);
                     scope_emitted[scope_depth - 1] = emit_scope ? 1 : 0;
                 }
 
                 if (!emit_scope) {
 #if defined(VCD2FST_EXTLOAD_CONV)
-                    /* Keep extload reader hierarchy aligned even when filtered out. */
                     if (xc) {
                         fstReaderPushScope(xc, st, NULL);
                     }
@@ -997,60 +994,58 @@ int fst_main(char *vname, char *fstname)
                 } else {
 #if defined(VCD2FST_EXTLOAD_CONV)
 #ifdef _WAVE_HAVE_JUDY
-                    if (PJArray) {
-                        const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
-                        PPvoid_t PPValue = JudySLGet(PJArray, (uint8_t *)fst_scope_name2, PJE0);
+            if (PJArray) {
+                const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
+                PPvoid_t PPValue = JudySLGet(PJArray, (uint8_t *)fst_scope_name2, PJE0);
 
-                        if (PPValue) {
-                            unsigned char st_replace = (*((unsigned char *)*PPValue)) - 1;
-                            if (st_replace != FST_ST_VCD_MODULE) {
-                                scopetype = st_replace;
-                            }
-
-                            if ((scopetype == FST_ST_VCD_GENERATE) ||
-                                (scopetype == FST_ST_VCD_STRUCT)) {
-                                PPValue = NULL;
-                            }
-
-                            fstWriterSetScope(ctx,
-                                              scopetype,
-                                              st,
-                                              PPValue ? ((char *)(*PPValue) + 1) : NULL);
-                        } else {
-                            fstWriterSetScope(ctx, scopetype, st, NULL);
-                        }
+                if (PPValue) {
+                    unsigned char st_replace = (*((unsigned char *)*PPValue)) - 1;
+                    if (st_replace != FST_ST_VCD_MODULE) {
+                        scopetype = st_replace;
                     }
+
+                    if ((scopetype == FST_ST_VCD_GENERATE) || (scopetype == FST_ST_VCD_STRUCT)) {
+                        PPValue = NULL;
+                    }
+
+                    fstWriterSetScope(ctx,
+                                      scopetype,
+                                      st,
+                                      PPValue ? ((char *)(*PPValue) + 1) : NULL);
+                } else {
+                    fstWriterSetScope(ctx, scopetype, st, NULL);
+                }
+            }
 #else
-                    if (comp_name_jrb) {
-                        const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
-                        char cstring[65537];
-                        JRB str;
+            if (comp_name_jrb) {
+                const char *fst_scope_name2 = fstReaderPushScope(xc, st, NULL);
+                char cstring[65537];
+                JRB str;
 
-                        strcpy(cstring, fst_scope_name2);
-                        str = jrb_find_str(comp_name_jrb, cstring);
+                strcpy(cstring, fst_scope_name2);
+                str = jrb_find_str(comp_name_jrb, cstring);
 
-                        if (str) {
-                            unsigned char st_replace = str->val.s[0] - 1;
-                            if (st_replace != FST_ST_VCD_MODULE) {
-                                scopetype = st_replace;
-                            }
-
-                            if ((scopetype == FST_ST_VCD_GENERATE) ||
-                                (scopetype == FST_ST_VCD_STRUCT)) {
-                                str = NULL;
-                            }
-
-                            fstWriterSetScope(ctx, scopetype, st, str ? (str->val.s + 1) : NULL);
-                        } else {
-                            fstWriterSetScope(ctx, scopetype, st, NULL);
-                        }
+                if (str) {
+                    unsigned char st_replace = str->val.s[0] - 1;
+                    if (st_replace != FST_ST_VCD_MODULE) {
+                        scopetype = st_replace;
                     }
-#endif
-                    else
-#endif
-                    {
-                        fstWriterSetScope(ctx, scopetype, st, NULL);
+
+                    if ((scopetype == FST_ST_VCD_GENERATE) || (scopetype == FST_ST_VCD_STRUCT)) {
+                        str = NULL;
                     }
+
+                    fstWriterSetScope(ctx, scopetype, st, str ? (str->val.s + 1) : NULL);
+                } else {
+                    fstWriterSetScope(ctx, scopetype, st, NULL);
+                }
+            }
+#endif
+            else
+#endif
+            {
+                fstWriterSetScope(ctx, scopetype, st, NULL);
+            }
                 }
             }
         } else if (!strncmp(buf1, "upscope", 7)) {
@@ -1277,6 +1272,35 @@ int fst_main(char *vname, char *fstname)
         }
     }
 
+    if (scope_nparts && !vars_created) {
+        fprintf(stderr, "vcd2fst: ERROR: -s '%s' matched no variables\n", scope_filter);
+        fstWriterClose(ctx);
+        if (vcd_ids) {
+            JRB nit;
+            jrb_traverse(nit, vcd_ids) {
+                free(nit->key.s);
+            }
+            jrb_free_tree(vcd_ids);
+            vcd_ids = NULL;
+        }
+        while (scope_depth > 0) {
+            scope_stack_pop_emitted(scope_stack, scope_emitted, &scope_depth);
+        }
+        free(scope_stack);
+        free(scope_emitted);
+        free_scope_parts(scope_parts, scope_nparts);
+        free(bin_fixbuff);
+        free(wbuf);
+        if (f != stdin) {
+            if (is_popen) {
+                pclose(f);
+            } else {
+                fclose(f);
+            }
+        }
+        return (255);
+    }
+
     if ((!hash_kill) && (vcd_ids)) {
         JRB nit;
 
@@ -1332,7 +1356,7 @@ int fst_main(char *vname, char *fstname)
                     hash = vcdid_hash(buf + 1, nl - (buf + 1));
                     if (hash >= 1 && hash <= hash_max) {
                         fstWriterEmitValueChange(ctx, hash, buf);
-                    } else if (!scope_nparts) {
+                    } else {
                         bad_changes++;
                     }
                 } else {
@@ -1369,9 +1393,7 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, nl - (sp + 1));
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        if (!scope_nparts) {
-                            bad_changes++;
-                        }
+                        bad_changes++;
                         break;
                     }
                     int bin_len = sp - (buf + 1); /* strlen(buf+1) */
@@ -1426,9 +1448,7 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, nl - (sp + 1));
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        if (!scope_nparts) {
-                            bad_changes++;
-                        }
+                        bad_changes++;
                         break;
                     }
                     int bin_len = sp - (buf + 1); /* strlen(buf+1) */
@@ -1494,9 +1514,7 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, strlen(sp + 1)); /* nl is no longer good here */
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        if (!scope_nparts) {
-                            bad_changes++;
-                        }
+                        bad_changes++;
                         break;
                     }
                     fstWriterEmitValueChange(ctx, hash, bin_fixbuff);
@@ -1519,9 +1537,7 @@ int fst_main(char *vname, char *fstname)
                 hash = vcdid_hash(sp + 1, nl - (sp + 1));
                 if (!hash_kill) {
                     if (hash < 1 || hash > hash_max) {
-                        if (!scope_nparts) {
-                            bad_changes++;
-                        }
+                        bad_changes++;
                         break;
                     }
                     sscanf(buf + 1, "%lg", &doub);
@@ -1546,7 +1562,7 @@ int fst_main(char *vname, char *fstname)
                     hash = vcdid_hash(buf + 1, nl - (buf + 1));
                     if (hash >= 1 && hash <= hash_max) {
                         fstWriterEmitValueChange(ctx, hash, buf);
-                    } else if (!scope_nparts) {
+                    } else {
                         bad_changes++;
                     }
                 } else {
