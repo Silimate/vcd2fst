@@ -6499,23 +6499,38 @@ for(;;)
                 {
                 if((tim == end_tim) && (tim != xc->end_time))
                         {
+                        /* Adjacent VCDATA blocks share their boundary time
+                           (prev end_tim == next beg_tim).  Prefer the next
+                           block so transitions recorded at that instant are
+                           visible.  blkpos is already section_start+1, so the
+                           next section starts at blkpos+seclen. */
                         fst_off_t cached_pos = ftello(xc->f);
-                        fstReaderFseeko(xc, xc->f, blkpos, SEEK_SET);
+                        uint64_t saved_seclen = seclen;
+                        fst_off_t next_pos = blkpos + seclen;
+                        int next_sectype;
 
-                        sectype = fgetc(xc->f);
+                        fstReaderFseeko(xc, xc->f, next_pos, SEEK_SET);
+                        next_sectype = fgetc(xc->f);
                         seclen = fstReaderUint64(xc->f);
-
                         beg_tim2 = fstReaderUint64(xc->f);
                         end_tim2 = fstReaderUint64(xc->f);
 
-                        if(((sectype != FST_BL_VCDATA)&&(sectype != FST_BL_VCDATA_DYN_ALIAS)&&(sectype != FST_BL_VCDATA_DYN_ALIAS2)) || (!seclen) || (beg_tim2 != tim))
+                        if(((next_sectype != FST_BL_VCDATA)&&(next_sectype != FST_BL_VCDATA_DYN_ALIAS)&&(next_sectype != FST_BL_VCDATA_DYN_ALIAS2)) || (!seclen) || (beg_tim2 != tim))
                                 {
-                                blkpos = prev_blkpos;
+                                /* Stay on the current block: restore seclen and
+                                   the file position after beg_tim/end_tim.  Do
+                                   not reset blkpos to prev_blkpos — the frame
+                                   reader expects section_start+1. */
+                                seclen = saved_seclen;
+                                fstReaderFseeko(xc, xc->f, cached_pos, SEEK_SET);
                                 break;
                                 }
+                        /* Switched to the next block; file is already after
+                           its beg_tim/end_tim (ready for mem_required). */
+                        sectype = next_sectype;
                         beg_tim = beg_tim2;
                         end_tim = end_tim2;
-                        fstReaderFseeko(xc, xc->f, cached_pos, SEEK_SET);
+                        blkpos = next_pos + 1;
                         }
                 break;
                 }
