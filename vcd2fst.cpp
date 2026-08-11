@@ -1441,7 +1441,7 @@ int fst_main(char *vname, char *fstname)
     return (bad_changes ? 1 : 0);
 }
 
-void print_help(char *nam)
+void print_help(char *nam, int exit_code)
 {
 #ifdef VCD2FST_EXTLOADERS_CONV
 
@@ -1528,7 +1528,7 @@ void print_help(char *nam)
     free(ucase_ext);
 #endif
 
-    exit(0);
+    exit(exit_code);
 }
 
 int main(int argc, char **argv)
@@ -1600,7 +1600,7 @@ int main(int argc, char **argv)
                 break;
 
             case 'h':
-                print_help(argv[0]);
+                print_help(argv[0], 0);
                 break;
 
             case '?':
@@ -1614,7 +1614,7 @@ int main(int argc, char **argv)
     }
 
     if (opt_errors_encountered) {
-        print_help(argv[0]);
+        print_help(argv[0], 1);
     }
 
     if (optind < argc) {
@@ -1632,7 +1632,7 @@ int main(int argc, char **argv)
     }
 
     if ((!vname) || (!lxname)) {
-        print_help(argv[0]);
+        print_help(argv[0], 1);
     }
 
     int rc = fst_main(vname, lxname);
