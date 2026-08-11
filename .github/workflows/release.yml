@@ -120,7 +120,7 @@ jobs:
           TAG: '${{ needs.version.outputs.version }}'
         run: |
           prerelease_arg=()
-          if [ -z "${{ inputs.draft || '' }}" ]; then
+          if [ "${{ inputs.draft }}" == "true" ]; then
             prerelease_arg+=( "--prerelease" )
           fi
           gh release create "v$TAG" dist/*.whl \
@@ -130,7 +130,6 @@ jobs:
             --generate-notes \
             --notes 'Automated build based on commit ${{ github.sha }}'
       - name: Upload Wheels to Silimate Download Server
-        if: needs.prepare.outputs.cibw_build == '*' # do NOT upload partial releases
         env:
           SERVER_SSH_KEY: ${{ secrets.SILIMATE_SERVER_SSH_PRIVATE_KEY }}
         run: |
