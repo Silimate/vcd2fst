@@ -138,4 +138,4 @@ jobs:
           chmod 600 $PWD/ssh/key
           SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -i $PWD/ssh/key"
           rsync --verbose --rsh="ssh $SSH_OPTS" --recursive $PWD/dist/\
-            ubuntu@downloads.silimate.com:/usr/share/nginx/pypi/invio/
+            ubuntu@downloads.silimate.com:/usr/share/nginx/pypi/vcd2fst/
