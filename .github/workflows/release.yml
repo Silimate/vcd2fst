@@ -119,12 +119,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: '${{ needs.version.outputs.version }}'
         run: |
-          prerelease_arg=()
+          draft_arg=()
           if [ "${{ inputs.draft }}" == "true" ]; then
-            prerelease_arg+=( "--prerelease" )
+            draft_arg+=( "--draft" )
           fi
           gh release create "v$TAG" dist/*.whl \
-            "${prerelease_arg[@]}" \
+            "${draft_arg[@]}" \
             --repo '${{ github.repository }}' \
             --target '${{ github.sha }}' \
             --generate-notes \

@@ -26,6 +26,7 @@ import sysconfig
 import subprocess
 from email.policy import EmailPolicy
 from email.message import EmailMessage
+from typing import Tuple, Iterable, Optional
 from wheel.wheelfile import WheelFile
 
 PROJECT_NAME = "vcd2fst"
@@ -34,29 +35,17 @@ PROJECT_VERSION = os.getenv(
 )
 DIST_NAME = f"{PROJECT_NAME}-{PROJECT_VERSION}"
 
-ENTRY_POINTS = f"""
-[console_scripts]
-vcd2fst = {PROJECT_NAME}.wrapper:vcd2fst
-"""
-
 PLATFORM_TAG_RAW = sysconfig.get_platform()
 PLATFORM_TAG = (
     PLATFORM_TAG_RAW.lower().replace("-", "_").replace(".", "_").replace(" ", "_")
 )
 COMPAT_TAG = f"py3-none-{PLATFORM_TAG}"
 
-
-def make_message(headers, payload=None):
-    msg = EmailMessage(policy=EmailPolicy(max_line_length=0))
-    for name, value in headers:
-        if isinstance(value, list):
-            for value_part in value:
-                msg[name] = value_part
-        else:
-            msg[name] = value
-    if payload:
-        msg.set_payload(payload)
-    return bytes(msg)
+# python uses ENTRY_POINTS in metadata to synthesize entries in ./venv/bin
+ENTRY_POINTS = f"""
+[console_scripts]
+vcd2fst = {PROJECT_NAME}.wrapper:vcd2fst
+"""
 
 
 def build_sdist(sdist_dir, config_settings=None):
@@ -81,7 +70,28 @@ def build_sdist(sdist_dir, config_settings=None):
     return sdist_filename
 
 
+def make_message(headers: Iterable[Tuple[str, str]], payload: Optional[str] = None):
+    """
+    converts a set of python tuples and an optional payload in a manner
+    consistent with
+    https://packaging.python.org/en/latest/specifications/core-metadata/#core-metadata
+    """
+    msg = EmailMessage(policy=EmailPolicy(max_line_length=0))
+    for name, value in headers:
+        if isinstance(value, list):
+            for value_part in value:
+                msg[name] = value_part
+        else:
+            msg[name] = value
+    if payload:
+        msg.set_payload(payload)
+    return bytes(msg)
+
+
 def get_metadata_files():
+    """
+    (see https://packaging.python.org/en/latest/specifications/recording-installed-packages/)
+    """
     with open("README.md", "rb") as readme:
         long_description = readme.read()
 
@@ -106,7 +116,7 @@ def get_metadata_files():
                 ("Description-Content-Type", "text/markdown"),
                 ("Classifier", "Programming Language :: Python :: 3"),
                 ("Requires-Python", ">=3.8"),
-                ("License", "MIT")
+                ("License", "MIT"),
             ],
             long_description,
         ),
@@ -115,6 +125,11 @@ def get_metadata_files():
 
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
+    """
+    top-level function (called by pip during wheel build)
+
+    generates dist-info
+    """
     os.mkdir(f"{metadata_directory}/{DIST_NAME}.dist-info")
 
     for filename, contents in get_metadata_files().items():
@@ -125,26 +140,36 @@ def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
 
 
 def build_wheel(wheel_dir, config_settings=None, metadata_directory=None):
+    """
+    top-level function (called by wheel build)
+
+    builds vcd2fst and creates python version-agnostic wheel
+    """
     wheel_filename = f"{DIST_NAME}-{COMPAT_TAG}.whl"
 
     with WheelFile(pathlib.Path(wheel_dir) / wheel_filename, "w") as wheel:
+        # write metadata
         for filename, contents in get_metadata_files().items():
             wheel.writestr(f"{DIST_NAME}.dist-info/{filename}", contents)
 
+        # get optional cmake configuration options
         cmake_options = []
         if config_settings is not None:
             if cmake_options := config_settings.get("cmake", cmake_options):
                 if isinstance(cmake_options, str):
                     cmake_options = [cmake_options]
 
+        # build in temporary directory
         with tempfile.TemporaryDirectory(f".{PROJECT_NAME}-build", "w") as d_str:
             d = pathlib.Path(d_str)
 
-            # python
+            # copy python wrapper that is used by ENTRY_POINTS
             wheel.write("wheel_build/wrapper.py", f"{PROJECT_NAME}/wrapper.py")
 
+            # configure
             subprocess.check_call(["cmake", "-B", d, "."])
 
+            # build
             subprocess.check_call(
                 [
                     "cmake",
@@ -154,8 +179,7 @@ def build_wheel(wheel_dir, config_settings=None, metadata_directory=None):
                 ]
             )
 
-            print(os.listdir(d))
-
+            # copy binary to same location as wrapper.py
             wheel.write(d / "vcd2fst", f"{PROJECT_NAME}/vcd2fst")
 
     return wheel_filename
