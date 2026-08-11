@@ -2,7 +2,7 @@
 requires = [
 	"wheel",
 	"packaging",
-	# "cmake", # faster to install it using OS package manager in before_all
+	"cmake",
 ]
 backend-path = ["."]
 build-backend = "wheel_build"
