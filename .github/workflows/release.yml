@@ -120,7 +120,7 @@ jobs:
           TAG: '${{ needs.version.outputs.version }}'
         run: |
           prerelease_arg=()
-          if [ -z "${{ inputs.draft || '' }}" ]; then
+          if [ "${{ inputs.draft }}" == "true" ]; then
             prerelease_arg+=( "--prerelease" )
           fi
           gh release create "v$TAG" dist/*.whl \
