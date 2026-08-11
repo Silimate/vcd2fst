@@ -33,3 +33,8 @@
 
 # Build
 build/
+venv/
+.venv/
+__pycache__
+*.whl
+wheelhouse
