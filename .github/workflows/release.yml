@@ -37,13 +37,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BASE_VER=$(git show HEAD --format="%cs" | tr -d '\n' | tr '-' '.')
+          BASE_VER=$(git show HEAD -q --format="%cs" | tr -d '\n' | tr '-' '.')
           COUNTER=0
           CURRENT_VER=$BASE_VER
           while gh release view "v$CURRENT_VER" > /dev/null 2>&1; do
             COUNTER=$(expr $COUNTER + 1)
             CURRENT_VER=$BASE_VER.post$COUNTER
           done
+          echo "Found unused version $CURRENT_VER."
           echo "version=$CURRENT_VER" >> $GITHUB_OUTPUT
   build:
     needs: [version]
@@ -70,7 +71,7 @@ jobs:
           fetch-depth: 0
           submodules: true
       - if: ${{ matrix.os.name == 'macos' && matrix.os.arch == 'arm64' }}
-        name: "[macOS/arm64] Install Python 3.8 (see: https://cibuildwheel.pypa.io/en/stable/faq/#macos-building-cpython-38-wheels-on-arm64)"
+        name: "[macOS/arm64] Install Python 3.8 (see: https://cibuildwheel.pypa.io/en/v3.4.1/faq/#macos-building-cpython-38-wheels-on-arm64)"
         uses: actions/setup-python@v5
         with:
           python-version: 3.8
