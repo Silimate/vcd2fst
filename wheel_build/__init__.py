@@ -44,7 +44,7 @@ COMPAT_TAG = f"py3-none-{PLATFORM_TAG}"
 # python uses ENTRY_POINTS in metadata to synthesize entries in ./venv/bin
 ENTRY_POINTS = f"""
 [console_scripts]
-vcd2fst = {PROJECT_NAME}.wrapper:vcd2fst
+vcd2fst = {PROJECT_NAME}.__main__:vcd2fst
 """
 
 
@@ -163,8 +163,9 @@ def build_wheel(wheel_dir, config_settings=None, metadata_directory=None):
         with tempfile.TemporaryDirectory(f".{PROJECT_NAME}-build", "w") as d_str:
             d = pathlib.Path(d_str)
 
-            # copy python wrapper that is used by ENTRY_POINTS
-            wheel.write("wheel_build/wrapper.py", f"{PROJECT_NAME}/wrapper.py")
+            # copy python files
+            wheel.write("wheel_build/vcd2fst/__init__.py", f"{PROJECT_NAME}/__init__.py")
+            wheel.write("wheel_build/vcd2fst/__main__.py", f"{PROJECT_NAME}/__main__.py")
 
             # configure
             subprocess.check_call(["cmake", "-B", d, "."])
@@ -179,7 +180,7 @@ def build_wheel(wheel_dir, config_settings=None, metadata_directory=None):
                 ]
             )
 
-            # copy binary to same location as wrapper.py
+            # copy binary to same location as __main__.py
             wheel.write(d / "vcd2fst", f"{PROJECT_NAME}/vcd2fst")
 
     return wheel_filename
