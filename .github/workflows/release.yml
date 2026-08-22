@@ -80,6 +80,8 @@ jobs:
         if: ${{ matrix.os.name == 'macos' && matrix.os.arch == 'arm64' }}
         run: |
           pipx run build --sdist
+        env:
+          VCD2FST_WHEEL_VERSION: ${{ needs.version.outputs.version }}
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.1
         with:
