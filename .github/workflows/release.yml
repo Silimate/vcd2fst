@@ -76,6 +76,8 @@ jobs:
         with:
           python-version: 3.8
       - name: Build sdist
+        # only build on one platform, not sure what the collision behavior is
+        if: ${{ matrix.os.name == 'macos' && matrix.os.arch == 'arm64' }}
         run: |
           pipx run build --sdist
       - name: Build wheels
@@ -128,6 +130,7 @@ jobs:
           fi
           gh release create "v$TAG" dist/*.whl \
             "${draft_arg[@]}" \
+            --prerelease \
             --repo '${{ github.repository }}' \
             --target '${{ github.sha }}' \
             --generate-notes \
