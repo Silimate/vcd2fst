@@ -18,6 +18,7 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 import datetime
+import io
 import os
 import pathlib
 import tarfile
@@ -30,9 +31,12 @@ from typing import Tuple, Iterable, Optional
 from wheel.wheelfile import WheelFile
 
 PROJECT_NAME = "vcd2fst"
-PROJECT_VERSION = os.getenv(
-    "VCD2FST_WHEEL_VERSION", datetime.datetime.now().strftime("%Y.%m.%d")
-)
+PROJECT_VERSION = os.getenv("VCD2FST_WHEEL_VERSION")
+if PROJECT_VERSION is None:
+    try:
+        PROJECT_VERSION = pathlib.Path("SDIST_VERSION").read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        PROJECT_VERSION = datetime.datetime.now().strftime("%Y.%m.%d")
 DIST_NAME = f"{PROJECT_NAME}-{PROJECT_VERSION}"
 
 PLATFORM_TAG_RAW = sysconfig.get_platform()
@@ -56,12 +60,30 @@ def build_sdist(sdist_dir, config_settings=None):
         "w:gz",
         format=tarfile.PAX_FORMAT,
     ) as sdist:
+        version_bytes = PROJECT_VERSION.encode("ascii")
+        version_tarinfo = tarfile.TarInfo(f"{DIST_NAME}/SDIST_VERSION")
+        version_tarinfo.size = len(version_bytes)
+        sdist.addfile(version_tarinfo, io.BytesIO(version_bytes))
 
         def exclude_build(entry):
-            name = entry.name.removeprefix(f"{DIST_NAME}/")
-            if name in (".cache", "build", "dist", "venv"):
+            name = os.path.basename(entry.name)
+            if name in (
+                ".git",
+                ".github",
+                ".cache",
+                "build",
+                "dist",
+                "venv",
+                ".venv",
+                "test",
+                "__pycache__",
+            ):
                 return
-            if os.path.basename(name) in (".git", "__pycache__"):
+            if (
+                name.endswith(".whl")
+                or name.endswith(".tgz")
+                or name.endswith(".tar.gz")
+            ):
                 return
             return entry
 
@@ -164,8 +186,12 @@ def build_wheel(wheel_dir, config_settings=None, metadata_directory=None):
             d = pathlib.Path(d_str)
 
             # copy python files
-            wheel.write("wheel_build/vcd2fst/__init__.py", f"{PROJECT_NAME}/__init__.py")
-            wheel.write("wheel_build/vcd2fst/__main__.py", f"{PROJECT_NAME}/__main__.py")
+            wheel.write(
+                "wheel_build/vcd2fst/__init__.py", f"{PROJECT_NAME}/__init__.py"
+            )
+            wheel.write(
+                "wheel_build/vcd2fst/__main__.py", f"{PROJECT_NAME}/__main__.py"
+            )
 
             # configure
             subprocess.check_call(["cmake", "-B", d, "."])
