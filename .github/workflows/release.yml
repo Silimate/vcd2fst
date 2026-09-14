@@ -89,6 +89,9 @@ jobs:
             VCD2FST_WHEEL_VERSION=${{ needs.version.outputs.version }}
           CIBW_BEFORE_ALL: >
             bash {package}/wheel_build/before_all.sh
+          # patchelf version installed by default creates a corrupt ELF binary
+          # sometimes
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: pip3 install --upgrade patchelf && auditwheel repair -w {dest_dir} {wheel}
           # long options not available on macOS
           CIBW_TEST_COMMAND: >
             vcd2fst {package}/test/basic.vcd {package}/test/basic.fst 2>&1 | grep "6 vars, 6 aliases, last time 9"

@@ -52,3 +52,7 @@ set_target_properties(vcd2fst-bin PROPERTIES OUTPUT_NAME vcd2fst)
 target_include_directories(vcd2fst-bin PUBLIC .)
 target_link_libraries(vcd2fst-bin PUBLIC z)
 target_link_libraries(vcd2fst-bin PUBLIC Backward::Interface)
+
+if(CMAKE_SYSTEM_NAME MATCHES "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT BUILD_SHARED_LIBS)
+  target_link_options(vcd2fst-bin PRIVATE -static-libstdc++ -static-libgcc)
+endif()
