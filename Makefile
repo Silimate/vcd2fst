@@ -36,3 +36,9 @@ run-cmake-release:
 run-cmake-debug:
 	cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX=$(PREFIX) -DBUILD_SHARED_LIBS=OFF $(ADDITIONAL_CMAKE_OPTIONS) -S . -B build
 
+.PHONY: test
+test:
+	@set -e; scratch=$$(mktemp -d); trap 'rm -rf "$$scratch"' EXIT; \
+	  $(CC) $(CPPFLAGS) $(CFLAGS) -I. test/real_precision.c fstapi.c fastlz.c lz4.c \
+	     $(LDFLAGS) -lz $(LDLIBS) -o "$$scratch/real_precision"; \
+	  cd "$$scratch" && ./real_precision

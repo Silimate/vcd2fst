@@ -124,6 +124,8 @@ void **JenkinsIns(void *base_i, const unsigned char *mem, uint32_t length, uint3
 #define FST_ID_NAM_SIZ                  (512)
 #define FST_ID_NAM_ATTR_SIZ             (65536+4096)
 #define FST_DOUBLE_ENDTEST              (2.7182818284590452354)
+/* 17 significant digits round-trip every finite binary64 value. */
+#define FST_DOUBLE_FMT                  "%.17g"
 #define FST_HDR_SIM_VERSION_SIZE        (128)
 #define FST_HDR_DATE_SIZE               (119)
 #define FST_HDR_FILETYPE_SIZE           (1)
@@ -5632,7 +5634,7 @@ for(;;)
                                                                                         clone_d[j] = srcdata[7-j];
                                                                                         }
                                                                                 }
-                                                                        snprintf((char *)xc->temp_signal_value_buf, xc->longest_signal_value_len + 1, "%.16g", d);
+                                                                        snprintf((char *)xc->temp_signal_value_buf, xc->longest_signal_value_len + 1, FST_DOUBLE_FMT, d);
                                                                         value_change_callback(user_callback_data_pointer, beg_tim, idx+1, xc->temp_signal_value_buf);
                                                                         }
                                                                 }
@@ -5660,7 +5662,7 @@ for(;;)
                                                                                 }
 
                                                                         fstVcdID(vcdid_buf, idx+1);
-                                                                        wx_len = snprintf(wx_buf, 64, "r%.16g %s\n", d, vcdid_buf);
+                                                                        wx_len = snprintf(wx_buf, 64, "r" FST_DOUBLE_FMT " %s\n", d, vcdid_buf);
                                                                         fstWritex(xc, wx_buf, wx_len);
                                                                         }
                                                                 }
@@ -6276,7 +6278,7 @@ for(;;)
                                                                         clone_d[j] = srcdata[7-j];
                                                                         }
                                                                 }
-                                                        snprintf((char *)xc->temp_signal_value_buf, xc->longest_signal_value_len + 1, "%.16g", d);
+                                                        snprintf((char *)xc->temp_signal_value_buf, xc->longest_signal_value_len + 1, FST_DOUBLE_FMT, d);
                                                         value_change_callback(user_callback_data_pointer, time_table[i], idx+1, xc->temp_signal_value_buf);
                                                         }
                                                 }
@@ -6302,7 +6304,7 @@ for(;;)
                                                                         }
                                                                 }
 
-                                                        wx_len = snprintf(wx_buf, 32, "r%.16g", d);
+                                                        wx_len = snprintf(wx_buf, 32, "r" FST_DOUBLE_FMT, d);
                                                         fstWritex(xc, wx_buf, wx_len);
                                                         }
                                                 }
@@ -6413,7 +6415,7 @@ if(xc->signal_lens[facidx] == 1)
                                 }
                         }
 
-                snprintf((char *)buf, 32, "%.16g", d); /* this will write 18 bytes */
+                snprintf((char *)buf, 32, FST_DOUBLE_FMT, d);
                 }
         }
 
@@ -7031,7 +7033,7 @@ if(xc->signal_lens[facidx] == 1)
                                         }
                                 }
 
-                        snprintf(buf, 32, "r%.16g", d); /* this will write 19 bytes */
+                        snprintf(buf, 32, "r" FST_DOUBLE_FMT, d);
                         return(buf);
                         }
                 }
