@@ -43,4 +43,9 @@ test:
 	     $(LDFLAGS) -lz $(LDLIBS) -o "$$scratch/real_precision"; \
 	  $(CC) $(CPPFLAGS) $(CFLAGS) -DFST_HDR_FOURPACK_MAX_SIZE=4096 -I. test/hier_lz4_limit.c \
 	     fstapi.c fastlz.c lz4.c $(LDFLAGS) -lz $(LDLIBS) -o "$$scratch/hier_lz4_limit"; \
-	  cd "$$scratch" && ./real_precision && ./hier_lz4_limit
+	  $(CXX) $(CPPFLAGS) $(CXXFLAGS) -fpermissive -I. -Ithird_party/backward-cpp -x c++ vcd2fst.cpp \
+	     fstapi.c fastlz.c lz4.c jrb.c third_party/backward-cpp/backward.cpp \
+	     $(LDFLAGS) -lz $(LDLIBS) -o "$$scratch/vcd2fst"; \
+	  $(CC) $(CPPFLAGS) $(CFLAGS) -I. test/vcd_ids.c fstapi.c fastlz.c lz4.c \
+	     $(LDFLAGS) -lz $(LDLIBS) -o "$$scratch/vcd_ids"; \
+	  cd "$$scratch" && ./real_precision && ./hier_lz4_limit && ./vcd_ids ./vcd2fst
