@@ -141,6 +141,37 @@ static void unit(void)
     }
     vcdid_free(&m);
 
+    /* ids chosen to share a bucket under an unseeded multiplicative hash, at
+       every table size: c * K == k (mod 2^64) for small k */
+    {
+        const uint64_t K = 0x9e3779b97f4a7c15ULL;
+        uint64_t inv = K, top = 0;
+        for (int i = 0; i < 6; i++) inv *= 2 - K * inv; /* K^-1 mod 2^64 */
+        for (int i = 1; i <= 9; i++) top = top * 94 + 94; /* largest 9-char number */
+        static uint64_t evil[30000];
+        int ne = 0;
+        for (uint64_t k = 1; ne < 30000; k++)
+            if (k * inv <= top) evil[ne++] = k * inv;
+        if ((evil[0] * K) >> 44 || (evil[ne - 1] * K) >> 44) fail("crafted ids don't collide", 1, 0);
+        struct vcdid t = {0};
+        for (int i = 0; i < ne; i++) {
+            bij(a, evil[i]);
+            if (vcdid_add(&t, a, strlen(a), 1) != (uint32_t)i + 1) fail("crafted: handle", t.count, i + 1);
+        }
+        uint64_t mask = (1ULL << t.bits) - 1, moved = 0;
+        for (uint64_t i = 0; i <= mask; i++)
+            if (t.slots[i]) moved += (i - vcdid_slot(&t, t.keys[t.slots[i]], NULL, 0)) & mask;
+        if (moved > 4ULL * ne) fail("crafted ids: slots probed past home", moved, 4ULL * ne);
+        for (int i = 0; i < ne; i++) {
+            bij(a, evil[i]);
+            if (vcdid_find(&t, a, strlen(a)) != (uint32_t)i + 1) {
+                fail("crafted: find", vcdid_find(&t, a, strlen(a)), i + 1);
+                break;
+            }
+        }
+        vcdid_free(&t);
+    }
+
     /* the other schemes, from the start */
     for (int scheme = 1; scheme <= 2; scheme++) {
         struct vcdid t = {0};

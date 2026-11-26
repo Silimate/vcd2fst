@@ -15,7 +15,8 @@
  *   while it grows, the old copy too).
  * - Otherwise each handle keeps a key (its number, or for an id that has
  *   none, its offset in a string arena with the top bit set) and an
- *   open-addressed table finds it: about 17 bytes a signal.
+ *   open-addressed table finds it: about 17 bytes a signal.  Its hash is
+ *   seeded per run, so ids written to collide can't pile into one bucket.
  *
  * Handles count 1, 2, 3... in the order ids are added, as fstWriterCreateVar
  * numbers them.
@@ -28,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define VCDID_STR (1ULL << 63)
 
@@ -40,6 +42,7 @@ struct vcdid {
     uint64_t *keys; /* key of each handle, once the numbers are too sparse for dir */
     uint32_t *slots; /* handles by hash of their key, 0 for none */
     int bits; /* 1 << bits slots */
+    uint64_t seed; /* of the hash, drawn with the table */
     char *arena; /* ids without a number, NUL-terminated */
     uint64_t used, size;
 };
@@ -72,15 +75,41 @@ static inline uint64_t vcdid_code(const char *s, size_t n)
     return v;
 }
 
+/* A seed the file can't know: from /dev/urandom, else the clock and ASLR. */
+static inline uint64_t vcdid_seed(void)
+{
+    uint64_t s = 0;
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        if (fread(&s, sizeof(s), 1, f) != 1) {
+            s = 0;
+        }
+        fclose(f);
+    }
+    if (!s) {
+        s = ((uint64_t)time(NULL) << 32) ^ (uint64_t)clock() ^ (uint64_t)(uintptr_t)&s;
+    }
+    return s;
+}
+
 static inline uint64_t vcdid_slot(const struct vcdid *m, uint64_t code, const char *s, size_t n)
 {
-    if (!code) { /* FNV-1a of the id */
-        code = 0xcbf29ce484222325ULL;
+    uint64_t h = m->seed;
+    if (code) {
+        h ^= code;
+    } else { /* FNV-1a of the id, from the seed */
+        h ^= 0xcbf29ce484222325ULL;
         while (n--) {
-            code = (code ^ (unsigned char)*s++) * 0x100000001b3ULL;
+            h = (h ^ (unsigned char)*s++) * 0x100000001b3ULL;
         }
     }
-    return (code * 0x9e3779b97f4a7c15ULL) >> (64 - m->bits);
+    /* murmur3's 64-bit finalizer: every input bit moves the top bits */
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    h *= 0xc4ceb9fe1a85ec53ULL;
+    h ^= h >> 33;
+    return h >> (64 - m->bits);
 }
 
 static inline void vcdid_put(struct vcdid *m, uint32_t h)
@@ -192,7 +221,10 @@ static inline uint32_t vcdid_add(struct vcdid *m, const char *s, size_t n, uint3
         return h;
     }
     /* past 3/4 full: grow the table to at most 3/8 full, and rehash */
-    m->bits = m->bits ? m->bits : 10;
+    if (!m->bits) {
+        m->bits = 10;
+        m->seed = vcdid_seed();
+    }
     while ((3ULL << m->bits) < (uint64_t)h * 8) {
         m->bits++;
     }
