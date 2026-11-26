@@ -4098,7 +4098,7 @@ if(!xc->fh)
                 pass_status = 0;
                 if(xc->fh)
                         {
-                        fclose(xc->fh); xc->fh = NULL; /* needed in case .hier file is missing and there are no hier sections */
+                        tmpfile_close(&xc->fh, &xc->fh_nam); /* needed in case .hier file is missing and there are no hier sections */
                         }
                 }
 
@@ -4223,6 +4223,7 @@ if(!(isfeof=feof(xc->fh)))
                                 }; /* attrname */
 			pnt[cl] = 0;
                         xc->hier.u.attr.name_length = cl;
+                        if(feof(xc->fh)) { isfeof = 1; break; } /* the varint would read EOF and abort */
 
                         xc->hier.u.attr.arg = fstReaderVarint64(xc->fh);
 
@@ -4295,6 +4296,7 @@ if(!(isfeof=feof(xc->fh)))
                                 }; /* varname */
                         pnt[cl] = 0;
                         xc->hier.u.var.name_length = cl;
+                        if(feof(xc->fh)) { isfeof = 1; break; } /* the varints would read EOF and abort */
                         xc->hier.u.var.length = fstReaderVarint32(xc->fh);
                         if(tag == FST_VT_VCD_PORT)
                                 {
@@ -4455,6 +4457,7 @@ while(!feof(xc->fh))
 					}
                                 }; /* attrname */
                         pnt[cl] = 0;
+                        if(feof(xc->fh)) break; /* the varint would read EOF and abort */
 
                         if(!str[0]) { strcpy(str, "\"\""); }
 
@@ -4544,6 +4547,7 @@ while(!feof(xc->fh))
 					}
                                 }; /* varname */
                         pnt[cl] = 0;
+                        if(feof(xc->fh)) break; /* the varints would read EOF and abort */
                         len = fstReaderVarint32(xc->fh);
                         alias = fstReaderVarint32(xc->fh);
 

@@ -174,6 +174,7 @@ int main(void)
     copy("small.fst", "short.fst");
     {
         FILE *f = fopen("short.fst", "rb");
+        if (!f) { perror("short.fst"); return 1; }
         hier_tag("short.fst", &at);
         fseek(f, at, SEEK_SET);
         uint64_t uclen = be64(f);
@@ -201,6 +202,23 @@ int main(void)
     }
     vars = walk("cut.fst", &rewound, &header);
     if (vars != 20) fail("truncated hierarchy vars", vars, 20);
+
+    /* EOF inside a var name ends the walk rather than aborting on its length. */
+    write_dump("cutvar.fst", FST_WR_PT_LZ4, 0, 20, NULL);
+    {
+        FILE *f = fopen("cutvar.fst.hier", "rb");
+        if (!f) { perror("cutvar.fst.hier"); return 1; }
+        char buf[4096];
+        size_t len = fread(buf, 1, sizeof(buf), f);
+        fclose(f);
+        char *last = NULL;
+        for (char *p = buf; (p = memchr(p, 's', len - (size_t)(p - buf))); p++)
+            if (!strncmp(p, "sig_19", 6)) last = p;
+        if (!last) { fputs("cutvar.fst.hier: no sig_19\n", stderr); return 1; }
+        if (truncate("cutvar.fst.hier", last + 3 - buf)) { perror("truncate"); return 1; }
+    }
+    vars = walk("cutvar.fst", &rewound, &header);
+    if (vars != 19) fail("vars before a truncated var record", vars, 19);
 
     if (failures) return 1;
     puts("hier_lz4_limit: ok");
