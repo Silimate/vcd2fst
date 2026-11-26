@@ -41,4 +41,6 @@ test:
 	@set -e; scratch=$$(mktemp -d); trap 'rm -rf "$$scratch"' EXIT; \
 	  $(CC) $(CPPFLAGS) $(CFLAGS) -I. test/real_precision.c fstapi.c fastlz.c lz4.c \
 	     $(LDFLAGS) -lz $(LDLIBS) -o "$$scratch/real_precision"; \
-	  cd "$$scratch" && ./real_precision
+	  $(CC) $(CPPFLAGS) $(CFLAGS) -DFST_HDR_FOURPACK_MAX_SIZE=4096 -I. test/hier_lz4_limit.c \
+	     fstapi.c fastlz.c lz4.c $(LDFLAGS) -lz $(LDLIBS) -o "$$scratch/hier_lz4_limit"; \
+	  cd "$$scratch" && ./real_precision && ./hier_lz4_limit
