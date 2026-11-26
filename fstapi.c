@@ -4435,7 +4435,7 @@ while(!feof(xc->fh))
 					}
                                 }; /* scopename */
                         pnt[cl] = 0;
-                        while(fgetc(xc->fh)) { }; /* scopecomp */
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch) { }; /* scopecomp */
 
                         if(fv) fprintf(fv, "$scope %s %s $end\n", modtypes[scopetype], str);
                         break;

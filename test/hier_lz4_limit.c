@@ -139,6 +139,11 @@ static unsigned long long walk(const char *path, int *rewound, unsigned long lon
         fprintf(stderr, "%s: the walk resumed after it ended\n", path);
         ++failures;
     }
+    /* The VCD-header walk must end on the same file too. */
+    FILE *vcd = tmpfile();
+    if (!vcd) { perror("tmpfile"); exit(1); }
+    fstReaderProcessHier(ctx, vcd);
+    fclose(vcd);
     fstReaderClose(ctx);
     return vars;
 }
