@@ -47,6 +47,7 @@
 #include "fastlz.h"
 #include "lz4.h"
 #include <errno.h>
+#include <limits.h>
 
 #ifndef HAVE_LIBPTHREAD
 #undef FST_WRITER_PARALLEL
@@ -133,6 +134,11 @@ void **JenkinsIns(void *base_i, const unsigned char *mem, uint32_t length, uint3
 #define FST_VARINT_CONTINUATION_MASK    0x80
 #define FST_GZIO_LEN                    (32768)
 #define FST_HDR_FOURPACK_DUO_SIZE       (4*1024*1024)
+/* LZ4 packs at most LZ4_MAX_INPUT_SIZE bytes, so a larger hierarchy is
+   stored with gzip.  Tests lower it to exercise that path. */
+#ifndef FST_HDR_FOURPACK_MAX_SIZE
+#define FST_HDR_FOURPACK_MAX_SIZE       (LZ4_MAX_INPUT_SIZE)
+#endif
 #define FST_ZWRAPPER_HDR_SIZE           (1+8+8)
 #define FST_BLOCK_TIME_TRAILER_SIZE     24
 
@@ -2072,6 +2078,9 @@ if(xc && !xc->already_in_close && !xc->already_in_flush)
                 gzFile zhandle;
                 int zfd;
                 int fourpack_duo = 0;
+                /* LZ4 takes int lengths: handing it a longer hierarchy packs
+                   nothing, and the file can't be read back. */
+                int fourpack = xc->fourpack && (xc->hier_file_len <= FST_HDR_FOURPACK_MAX_SIZE);
 #ifndef __MINGW32__
 		int fnam_len = strlen(xc->filename) + 5 + 1;
                 char *fnam = (char *)malloc(fnam_len);
@@ -2083,7 +2092,7 @@ if(xc && !xc->already_in_close && !xc->already_in_flush)
                 fstWriterUint64(xc->handle, 0);                 /* section length */
                 fstWriterUint64(xc->handle, xc->hier_file_len); /* uncompressed length */
 
-                if(!xc->fourpack)
+                if(!fourpack)
                         {
                         unsigned char *mem = (unsigned char *)malloc(FST_GZIO_LEN);
                         zfd = dup(fileno(xc->handle));
@@ -2125,7 +2134,8 @@ if(xc && !xc->already_in_close && !xc->already_in_flush)
                         packed_len = LZ4_compress_default((char *)hmem, (char *)mem, xc->hier_file_len, lz4_maxlen);
                         fstMunmap(hmem, xc->hier_file_len);
 
-                        fourpack_duo = (!xc->repack_on_close) && (xc->hier_file_len > FST_HDR_FOURPACK_DUO_SIZE); /* double pack when hierarchy is large */
+                        fourpack_duo = (!xc->repack_on_close) && (xc->hier_file_len > FST_HDR_FOURPACK_DUO_SIZE) /* double pack when hierarchy is large */
+                                && (packed_len <= LZ4_MAX_INPUT_SIZE); /* and the 1st round fits LZ4 */
 
                         if(fourpack_duo)        /* double packing with LZ4 is faster than gzip */
                                 {
@@ -2156,7 +2166,7 @@ if(xc && !xc->already_in_close && !xc->already_in_flush)
                 fflush(xc->handle);
 
                 fstWriterFseeko(xc, xc->handle, fixup_offs, SEEK_SET);
-                fputc(xc->fourpack ?
+                fputc(fourpack ?
                         ( fourpack_duo ? FST_BL_HIER_LZ4DUO : FST_BL_HIER_LZ4) :
                         FST_BL_HIER, xc->handle); /* actual tag now also == compression type */
 
@@ -3418,6 +3428,7 @@ uint64_t rvat_next_transition_time;
 struct fstHier hier;
 struct fstCurrHier *curr_hier;
 fstHandle current_handle;
+uint64_t hier_var_count; /* vars fstReaderIterateHier returned since the rewind */
 char *curr_flat_hier_nam;
 int flat_hier_alloc_len;
 unsigned do_rewind : 1;
@@ -3986,6 +3997,13 @@ if(!xc->fh)
 #ifndef __MINGW32__
                 fflush(xc->f);
 #endif
+                /* LZ4 lengths are int, and LZ4 packs at most LZ4_MAX_INPUT_SIZE
+                   bytes: an older writer handed a larger hierarchy packed
+                   nothing, so that hierarchy is lost. */
+                if(((uint64_t)clen > INT_MAX) || ((uint64_t)uclen > LZ4_MAX_INPUT_SIZE))
+                        {
+                        htyp = FST_BL_SKIP;
+                        }
                 }
 
 #ifndef __MINGW32__
@@ -4042,13 +4060,13 @@ if(!xc->fh)
                 fstFread(lz4_cmem, clen, 1, xc->f);
 
                 uclen2 = fstGetVarint64(lz4_cmem, &skiplen2);
-                lz4_ucmem2 = (unsigned char *)malloc(uclen2);
-                pass_status = (uclen2 == (uint64_t)LZ4_decompress_safe_partial ((char *)lz4_cmem + skiplen2, (char *)lz4_ucmem2, clen - skiplen2, uclen2, uclen2));
+                lz4_ucmem2 = (unsigned char *)malloc((uclen2 <= INT_MAX) ? uclen2 : 1);
+                pass_status = (uclen2 <= INT_MAX) && (uclen2 == (uint64_t)LZ4_decompress_safe_partial ((char *)lz4_cmem + skiplen2, (char *)lz4_ucmem2, clen - skiplen2, uclen2, uclen2));
                 if(pass_status)
                         {
                         pass_status = (uclen == LZ4_decompress_safe_partial ((char *)lz4_ucmem2, (char *)lz4_ucmem, uclen2, uclen, uclen));
 
-                        if(fstFwrite(lz4_ucmem, uclen, 1, xc->fh) != 1)
+                        if(pass_status && (fstFwrite(lz4_ucmem, uclen, 1, xc->fh) != 1))
                                 {
                                 pass_status = 0;
                                 }
@@ -4067,7 +4085,7 @@ if(!xc->fh)
                 fstFread(lz4_cmem, clen, 1, xc->f);
                 pass_status = (uclen == LZ4_decompress_safe_partial ((char *)lz4_cmem, (char *)lz4_ucmem, clen, uclen, uclen));
 
-                if(fstFwrite(lz4_ucmem, uclen, 1, xc->fh) != 1)
+                if(pass_status && (fstFwrite(lz4_ucmem, uclen, 1, xc->fh) != 1))
                         {
                         pass_status = 0;
                         }
@@ -4080,8 +4098,14 @@ if(!xc->fh)
                 pass_status = 0;
                 if(xc->fh)
                         {
-                        fclose(xc->fh); xc->fh = NULL; /* needed in case .hier file is missing and there are no hier sections */
+                        tmpfile_close(&xc->fh, &xc->fh_nam); /* needed in case .hier file is missing and there are no hier sections */
                         }
+                }
+
+        if(!pass_status && xc->fh)
+                {
+                /* Drop a partly decoded hierarchy so no caller walks it. */
+                tmpfile_close(&xc->fh, &xc->fh_nam);
                 }
 
         free(mem);
@@ -4136,6 +4160,7 @@ if(xc->do_rewind)
         {
         xc->do_rewind = 0;
         xc->current_handle = 0;
+        xc->hier_var_count = 0;
         fstReaderFseeko(xc, xc->fh, 0, SEEK_SET);
         clearerr(xc->fh);
         }
@@ -4151,7 +4176,8 @@ if(!(isfeof=feof(xc->fh)))
                         xc->hier.u.scope.typ = fgetc(xc->fh);
                         xc->hier.u.scope.name = pnt = xc->str_scope_nam;
 			cl = 0;
-                        while((ch = fgetc(xc->fh)))
+                        /* EOF ends a truncated name (fgetc would return EOF forever) */
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch)
                                 {
 				if(cl < FST_ID_NAM_SIZ)
 					{
@@ -4163,7 +4189,7 @@ if(!(isfeof=feof(xc->fh)))
 
                         xc->hier.u.scope.component = pnt = xc->str_scope_comp;
 			cl = 0;
-                        while((ch = fgetc(xc->fh)))
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch)
                                 {
 				if(cl < FST_ID_NAM_SIZ)
 					{
@@ -4188,7 +4214,7 @@ if(!(isfeof=feof(xc->fh)))
 				}
                         xc->hier.u.attr.name = pnt = xc->str_scope_attr;
 			cl = 0;
-                        while((ch = fgetc(xc->fh)))
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch)
                                 {
 				if(cl < FST_ID_NAM_ATTR_SIZ)
 					{
@@ -4197,6 +4223,7 @@ if(!(isfeof=feof(xc->fh)))
                                 }; /* attrname */
 			pnt[cl] = 0;
                         xc->hier.u.attr.name_length = cl;
+                        if(feof(xc->fh)) { isfeof = 1; break; } /* the varint would read EOF and abort */
 
                         xc->hier.u.attr.arg = fstReaderVarint64(xc->fh);
 
@@ -4244,6 +4271,14 @@ if(!(isfeof=feof(xc->fh)))
                 case FST_VT_SV_BYTE:
                 case FST_VT_SV_ENUM:
                 case FST_VT_SV_SHORTREAL:
+                        if(xc->var_count && (xc->hier_var_count++ >= xc->var_count))
+                                {
+                                /* More vars than the header counts: the hierarchy
+                                   is corrupt, so end the walk here for good. */
+                                fstReaderFseeko(xc, xc->fh, 0, SEEK_END);
+                                isfeof = 1;
+                                break;
+                                }
                         xc->hier.htyp = FST_HT_VAR;
                         xc->hier.u.var.svt_workspace = FST_SVT_NONE;
                         xc->hier.u.var.sdt_workspace = FST_SDT_NONE;
@@ -4252,7 +4287,7 @@ if(!(isfeof=feof(xc->fh)))
                         xc->hier.u.var.direction = fgetc(xc->fh);
                         xc->hier.u.var.name = pnt = xc->str_scope_nam;
 			cl = 0;
-                        while((ch = fgetc(xc->fh)))
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch)
                                 {
 				if(cl < FST_ID_NAM_SIZ)
 					{
@@ -4261,6 +4296,7 @@ if(!(isfeof=feof(xc->fh)))
                                 }; /* varname */
                         pnt[cl] = 0;
                         xc->hier.u.var.name_length = cl;
+                        if(feof(xc->fh)) { isfeof = 1; break; } /* the varints would read EOF and abort */
                         xc->hier.u.var.length = fstReaderVarint32(xc->fh);
                         if(tag == FST_VT_VCD_PORT)
                                 {
@@ -4391,7 +4427,7 @@ while(!feof(xc->fh))
                         if((scopetype < FST_ST_MIN) || (scopetype > FST_ST_MAX)) scopetype = FST_ST_VCD_MODULE;
                         pnt = str;
 			cl = 0;
-                        while((ch = fgetc(xc->fh)))
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch)
                                 {
 				if(cl < FST_ID_NAM_ATTR_SIZ)
 					{
@@ -4399,7 +4435,7 @@ while(!feof(xc->fh))
 					}
                                 }; /* scopename */
                         pnt[cl] = 0;
-                        while(fgetc(xc->fh)) { }; /* scopecomp */
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch) { }; /* scopecomp */
 
                         if(fv) fprintf(fv, "$scope %s %s $end\n", modtypes[scopetype], str);
                         break;
@@ -4413,7 +4449,7 @@ while(!feof(xc->fh))
                         subtype = fgetc(xc->fh);
                         pnt = str;
 			cl = 0;
-                        while((ch = fgetc(xc->fh)))
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch)
                                 {
 				if(cl < FST_ID_NAM_ATTR_SIZ)
 					{
@@ -4421,6 +4457,7 @@ while(!feof(xc->fh))
 					}
                                 }; /* attrname */
                         pnt[cl] = 0;
+                        if(feof(xc->fh)) break; /* the varint would read EOF and abort */
 
                         if(!str[0]) { strcpy(str, "\"\""); }
 
@@ -4502,7 +4539,7 @@ while(!feof(xc->fh))
                         /* vardir = */ fgetc(xc->fh); /* unused in VCD reader, but need to advance read pointer */
                         pnt = str;
 			cl = 0;
-                        while((ch = fgetc(xc->fh)))
+                        while(((ch = fgetc(xc->fh)) != EOF) && ch)
                                 {
 				if(cl < FST_ID_NAM_ATTR_SIZ)
 					{
@@ -4510,6 +4547,7 @@ while(!feof(xc->fh))
 					}
                                 }; /* varname */
                         pnt[cl] = 0;
+                        if(feof(xc->fh)) break; /* the varints would read EOF and abort */
                         len = fstReaderVarint32(xc->fh);
                         alias = fstReaderVarint32(xc->fh);
 

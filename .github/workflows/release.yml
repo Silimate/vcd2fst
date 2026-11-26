@@ -46,6 +46,13 @@ jobs:
           done
           echo "Found unused version $CURRENT_VER."
           echo "version=$CURRENT_VER" >> $GITHUB_OUTPUT
+  test:
+    name: fstapi tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - run: make test
   build:
     needs: [version]
     strategy:
@@ -103,7 +110,7 @@ jobs:
   release:
     runs-on: ubuntu-24.04
     name: Create release
-    needs: [version, build]
+    needs: [version, build, test]
     if: github.event_name != 'pull_request'
     permissions:
       contents: write
