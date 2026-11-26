@@ -28,6 +28,7 @@
 
 #include <fstapi.h>
 #include "jrb.h"
+#include "vcdid.h"
 #include "wave_locale.h"
 #include "backward.hpp"
 
@@ -384,23 +385,6 @@ static inline int getline_replace(char **wbuf, char **buf, size_t *len, FILE *f)
     }
 }
 
-JRB vcd_ids = NULL;
-
-static unsigned int vcdid_hash(char *s, int len)
-{
-    unsigned int val = 0;
-    int i;
-
-    s += len;
-
-    for (i = 0; i < len; i++) {
-        val *= 94;
-        val += ((unsigned char)*(--s)) - 32;
-    }
-
-    return (val);
-}
-
 int pack_type = FST_WR_PT_LZ4; /* set to fstWriterPackType */
 int compression_explicitly_set = 0;
 int repack_all = 0; /* 0 is normal, 1 does the repack (via fstapi) at end */
@@ -422,14 +406,10 @@ int fst_main(char *vname, char *fstname)
     void *ctx;
     int line = 0;
     int ss;
-    fstHandle returnedhandle;
-    JRB node;
+    struct vcdid ids = {0};
     uint64_t prev_tim = 0;
     ssize_t bin_fixbuff_len = 65537;
     char *bin_fixbuff = NULL;
-    int hash_kill = 0;
-    unsigned int hash_max = 0;
-    int *node_len_array = NULL;
     uint64_t bad_changes = 0;
     uint64_t vars_created = 0;
     uint64_t aliases = 0;
@@ -507,7 +487,6 @@ int fst_main(char *vname, char *fstname)
     }
 #endif
 
-    vcd_ids = make_jrb();
     fstWriterSetPackType(ctx, (enum fstWriterPackType) pack_type);
     fstWriterSetRepackOnClose(ctx, repack_all);
     fstWriterSetParallelMode(ctx, parallel_mode);
@@ -530,7 +509,6 @@ int fst_main(char *vname, char *fstname)
             enum fstVarType vartype;
             int len;
             char *nam;
-            unsigned int hash;
 
             if (!st) {
                 continue; /* variable declaration not on a single line */
@@ -673,24 +651,7 @@ int fst_main(char *vname, char *fstname)
                     break;
             }
 
-            st = strtok(NULL, " \t"); /* vcdid */
-            hash = vcdid_hash(st, strlen(st));
-
-            if (hash == (hash_max + 1)) {
-                hash_max = hash;
-            } else if ((hash > 0) && (hash <= hash_max)) {
-                /* general case with aliases */
-            } else {
-                hash_kill = 1;
-            }
-
-            if (strlen(st) >= 5) {
-                hash_kill = 1; /* 32-bit base-94 overflows; use string identity */
-            }
-
-            /* save id pointer before strtok advances; tree takes ownership via strdup */
-            const char *vcd_id = st;
-
+            const char *vcd_id = strtok(NULL, " \t");
             nam = strtok(NULL, " \t"); /* name */
             st = strtok(NULL, " \t"); /* $end */
 
@@ -699,28 +660,27 @@ int fst_main(char *vname, char *fstname)
                     *(st - 1) = ' ';
                 }
 
-                node = jrb_find_str(vcd_ids, (char *)vcd_id);
-                if (!node) {
-                    Jval val;
-                    returnedhandle = fstWriterCreateVar(
-                        ctx,
-                        vartype,
-                        (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
-                                       : var_direction[var_direction_idx++]),
-                        len,
-                        nam,
-                        0);
-                    val.i = returnedhandle;
-                    jrb_insert_str(vcd_ids, strdup(vcd_id), val)->val2.i = len;
+                size_t id_len = strlen(vcd_id);
+                fstHandle alias = vcdid_find(&ids, vcd_id, id_len);
+                if (!alias) {
+                    /* fstWriterCreateVar numbers new vars 1, 2, 3..., as vcdid_add does */
+                    fstWriterCreateVar(ctx,
+                                       vartype,
+                                       (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
+                                                      : var_direction[var_direction_idx++]),
+                                       len,
+                                       nam,
+                                       0);
+                    vcdid_add(&ids, vcd_id, id_len, len);
                     vars_created++;
                 } else {
                     fstWriterCreateVar(ctx,
                                        vartype,
                                        (enum fstVarDir) (!var_direction ? FST_VD_IMPLICIT
                                                       : var_direction[var_direction_idx++]),
-                                       node->val2.i,
+                                       ids.lens[alias],
                                        nam,
-                                       node->val.i);
+                                       alias);
                     aliases++;
                 }
 
@@ -1098,29 +1058,9 @@ int fst_main(char *vname, char *fstname)
         }
     }
 
-    if ((!hash_kill) && (vcd_ids)) {
-        JRB nit;
-
-        node_len_array = (int*) calloc(hash_max + 1, sizeof(int));
-
-        jrb_traverse(nit, vcd_ids) {
-            /* In canonical mode handle == hash, so index by handle */
-            unsigned int h = (unsigned int)nit->val.i;
-            if (h <= hash_max) {
-                node_len_array[h] = nit->val2.i;
-            }
-            free(nit->key.s);
-        }
-
-        jrb_free_tree(vcd_ids);
-        vcd_ids = NULL;
-    } else {
-        hash_kill = 1; /* scan-build; also keeps string tree alive for non-canonical path */
-    }
-
     for (;;) /* was while(!feof(f)) */
     {
-        unsigned int hash;
+        fstHandle h;
         uint64_t tim;
         char *nl, *sp;
         double doub;
@@ -1143,26 +1083,20 @@ int fst_main(char *vname, char *fstname)
             }
             nl++;
         }
+        while ((nl > buf) && ((nl[-1] == ' ') || (nl[-1] == '\t'))) {
+            *--nl = 0; /* an id ends at the last non-blank */
+        }
 
         switch (buf[0]) {
             case '0':
             case '1':
             case 'x':
             case 'z':
-                if (!hash_kill) {
-                    hash = vcdid_hash(buf + 1, nl - (buf + 1));
-                    if (hash >= 1 && hash <= hash_max) {
-                        fstWriterEmitValueChange(ctx, hash, buf);
-                    } else {
-                        bad_changes++;
-                    }
+                h = vcdid_find(&ids, buf + 1, nl - (buf + 1));
+                if (h) {
+                    fstWriterEmitValueChange(ctx, h, buf);
                 } else {
-                    node = jrb_find_str(vcd_ids, buf + 1);
-                    if (node) {
-                        fstWriterEmitValueChange(ctx, node->val.i, buf);
-                    } else {
-                        bad_changes++;
-                    }
+                    bad_changes++;
                 }
                 break;
 
@@ -1187,17 +1121,17 @@ int fst_main(char *vname, char *fstname)
                     break;
                 }
                 *sp = 0;
-                hash = vcdid_hash(sp + 1, nl - (sp + 1));
-                if (!hash_kill) {
-                    if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
-                        break;
-                    }
+                h = vcdid_find(&ids, sp + 1, nl - (sp + 1));
+                if (!h) {
+                    bad_changes++;
+                    break;
+                }
+                {
                     int bin_len = sp - (buf + 1); /* strlen(buf+1) */
-                    int node_len = node_len_array[hash];
+                    int node_len = ids.lens[h];
 
                     if (bin_len >= node_len) {
-                        fstWriterEmitValueChange(ctx, hash, buf + 1);
+                        fstWriterEmitValueChange(ctx, h, buf + 1);
                     } else {
                         int delta = node_len - bin_len;
 
@@ -1208,29 +1142,7 @@ int fst_main(char *vname, char *fstname)
 
                         memset(bin_fixbuff, buf[1] != '1' ? buf[1] : '0', delta);
                         memcpy(bin_fixbuff + delta, buf + 1, bin_len);
-                        fstWriterEmitValueChange(ctx, hash, bin_fixbuff);
-                    }
-                } else {
-                    node = jrb_find_str(vcd_ids, sp + 1);
-                    if (node) {
-                        int bin_len = sp - (buf + 1); /* strlen(buf+1) */
-                        int node_len = node->val2.i;
-                        if (bin_len >= node_len) {
-                            fstWriterEmitValueChange(ctx, node->val.i, buf + 1);
-                        } else {
-                            int delta = node_len - bin_len;
-
-                            if (node_len >= bin_fixbuff_len) {
-                                bin_fixbuff_len = node_len + 1;
-                                bin_fixbuff = (char*) realloc_2(bin_fixbuff, bin_fixbuff_len);
-                            }
-
-                            memset(bin_fixbuff, buf[1] != '1' ? buf[1] : '0', delta);
-                            memcpy(bin_fixbuff + delta, buf + 1, bin_len);
-                            fstWriterEmitValueChange(ctx, node->val.i, bin_fixbuff);
-                        }
-                    } else {
-                        bad_changes++;
+                        fstWriterEmitValueChange(ctx, h, bin_fixbuff);
                     }
                 }
                 break;
@@ -1242,26 +1154,14 @@ int fst_main(char *vname, char *fstname)
                     break;
                 }
                 *sp = 0;
-                hash = vcdid_hash(sp + 1, nl - (sp + 1));
-                if (!hash_kill) {
-                    if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
-                        break;
-                    }
+                h = vcdid_find(&ids, sp + 1, nl - (sp + 1));
+                if (h) {
                     int bin_len = sp - (buf + 1); /* strlen(buf+1) */
 
                     bin_len = fstUtilityEscToBin(NULL, (unsigned char *)(buf + 1), bin_len);
-                    fstWriterEmitVariableLengthValueChange(ctx, hash, buf + 1, bin_len);
+                    fstWriterEmitVariableLengthValueChange(ctx, h, buf + 1, bin_len);
                 } else {
-                    node = jrb_find_str(vcd_ids, sp + 1);
-                    if (node) {
-                        int bin_len = sp - (buf + 1); /* strlen(buf+1) */
-
-                        bin_len = fstUtilityEscToBin(NULL, (unsigned char *)(buf + 1), bin_len);
-                        fstWriterEmitVariableLengthValueChange(ctx, node->val.i, buf + 1, bin_len);
-                    } else {
-                        bad_changes++;
-                    }
+                    bad_changes++;
                 }
                 break;
 
@@ -1308,20 +1208,11 @@ int fst_main(char *vname, char *fstname)
                 }
                 *sp = 0;
 
-                hash = vcdid_hash(sp + 1, strlen(sp + 1)); /* nl is no longer good here */
-                if (!hash_kill) {
-                    if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
-                        break;
-                    }
-                    fstWriterEmitValueChange(ctx, hash, bin_fixbuff);
+                h = vcdid_find(&ids, sp + 1, strlen(sp + 1)); /* nl is no longer good here */
+                if (h) {
+                    fstWriterEmitValueChange(ctx, h, bin_fixbuff);
                 } else {
-                    node = jrb_find_str(vcd_ids, sp + 1);
-                    if (node) {
-                        fstWriterEmitValueChange(ctx, node->val.i, bin_fixbuff);
-                    } else {
-                        bad_changes++;
-                    }
+                    bad_changes++;
                 }
             } break;
 
@@ -1331,22 +1222,12 @@ int fst_main(char *vname, char *fstname)
                     bad_changes++;
                     break;
                 }
-                hash = vcdid_hash(sp + 1, nl - (sp + 1));
-                if (!hash_kill) {
-                    if (hash < 1 || hash > hash_max) {
-                        bad_changes++;
-                        break;
-                    }
+                h = vcdid_find(&ids, sp + 1, nl - (sp + 1));
+                if (h) {
                     sscanf(buf + 1, "%lg", &doub);
-                    fstWriterEmitValueChange(ctx, hash, &doub);
+                    fstWriterEmitValueChange(ctx, h, &doub);
                 } else {
-                    node = jrb_find_str(vcd_ids, sp + 1);
-                    if (node) {
-                        sscanf(buf + 1, "%lg", &doub);
-                        fstWriterEmitValueChange(ctx, node->val.i, &doub);
-                    } else {
-                        bad_changes++;
-                    }
+                    bad_changes++;
                 }
                 break;
 
@@ -1355,20 +1236,11 @@ int fst_main(char *vname, char *fstname)
             case 'w':
             case 'l':
             case '-':
-                if (!hash_kill) {
-                    hash = vcdid_hash(buf + 1, nl - (buf + 1));
-                    if (hash >= 1 && hash <= hash_max) {
-                        fstWriterEmitValueChange(ctx, hash, buf);
-                    } else {
-                        bad_changes++;
-                    }
+                h = vcdid_find(&ids, buf + 1, nl - (buf + 1));
+                if (h) {
+                    fstWriterEmitValueChange(ctx, h, buf);
                 } else {
-                    node = jrb_find_str(vcd_ids, buf + 1);
-                    if (node) {
-                        fstWriterEmitValueChange(ctx, node->val.i, buf);
-                    } else {
-                        bad_changes++;
-                    }
+                    bad_changes++;
                 }
                 break;
 
@@ -1394,6 +1266,7 @@ int fst_main(char *vname, char *fstname)
         }
     }
 
+    vcdid_free(&ids); /* before the close, which needs memory of its own */
     fstWriterClose(ctx);
 
     fprintf(stderr, "vcd2fst: %llu vars, %llu aliases, last time %llu\n",
@@ -1413,22 +1286,10 @@ int fst_main(char *vname, char *fstname)
     }
 #endif
 
-    if (vcd_ids) {
-        /* free strdup'd keys in the string tree */
-        JRB nit;
-        jrb_traverse(nit, vcd_ids) {
-            free(nit->key.s);
-        }
-        jrb_free_tree(vcd_ids);
-        vcd_ids = NULL;
-    }
-
     free(bin_fixbuff);
     bin_fixbuff = NULL;
     free(wbuf);
     wbuf = NULL;
-    free(node_len_array);
-    node_len_array = NULL;
 
     if (f != stdin) {
         if (is_popen) {
